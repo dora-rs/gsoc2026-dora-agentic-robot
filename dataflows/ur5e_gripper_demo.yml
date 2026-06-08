@@ -1,0 +1,41 @@
+# Week 2 — Robotiq 2F-85 gripper demo.
+#
+# A command source toggles open/close every 2 s; the gripper_controller maps
+# each command to the MuJoCo actuator command (ctrl[6], 0..255) which the sim
+# applies to the tendon-coupled gripper. Self-running.
+#
+# Run:
+#   bash scripts/fetch_ur5e_assets.sh        # one-time: fetch meshes
+#   dora up
+#   MUJOCO_HEADLESS=1 dora start dataflows/ur5e_gripper_demo.yml
+#   dora stop
+
+nodes:
+  - id: mujoco_sim
+    path: ../simulation/mujoco_node.py
+    inputs:
+      tick: dora/timer/millis/10
+      gripper_ctrl: gripper_controller/gripper_ctrl
+    outputs:
+      - joint_positions
+      - joint_velocities
+      - sensor_data
+    env:
+      MODEL_NAME: ../simulation/models/ur5e_scene.xml
+      # Set MUJOCO_HEADLESS=1 on machines without a display server.
+
+  - id: gripper_controller
+    path: ../simulation/gripper_controller.py
+    inputs:
+      gripper_command: command_source/gripper_command
+    outputs:
+      - gripper_ctrl
+      - gripper_status
+
+  - id: command_source
+    path: ../simulation/gripper_command_source.py
+    inputs:
+      tick: dora/timer/millis/2000
+      gripper_status: gripper_controller/gripper_status
+    outputs:
+      - gripper_command
