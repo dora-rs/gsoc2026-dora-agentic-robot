@@ -1,0 +1,114 @@
+# Week 3 — Full motion-planning dataflow (UR5e + Robotiq 2F-85).
+#
+# Wires the complete pipeline end to end:
+#   command_source -> planner/ik_solver/planning_scene -> trajectory_executor -> mujoco_sim
+#   command_source -> gripper_controller -> mujoco_sim
+# with sensor feedback (joint state, plan/exec/gripper status) flowing back.
+#
+# Motion-planning nodes (planning_scene, planner, ik_solver, trajectory_executor)
+# come from dora-rs/dora-moveit2. This repo provides mujoco_sim and
+# gripper_controller. See docs/week3-dataflow.md for setup of the dora-moveit2
+# dependency (the paths below assume it is checked out alongside this repo).
+#
+# Run (requires dora-moveit2 installed + meshes fetched):
+#   dora up
+#   MUJOCO_HEADLESS=1 dora start dataflows/ur5e_full_pipeline.yml
+#   dora stop
+
+nodes:
+  # --- Simulation (this repo) ---
+  - id: mujoco_sim
+    path: ../simulation/mujoco_node.py
+    inputs:
+      tick: dora/timer/millis/10
+      control_input: trajectory_executor/joint_commands
+      gripper_ctrl: gripper_controller/gripper_ctrl
+    outputs:
+      - joint_positions
+      - joint_velocities
+      - sensor_data
+    env:
+      MODEL_NAME: ../simulation/models/ur5e_scene.xml
+
+  # --- Planning scene: collision objects (dora-moveit2) ---
+  - id: planning_scene
+    path: ../../dora-moveit2/examples/move_group_demo/move_group_demo/nodes/planning_scene.py
+    inputs:
+      robot_state: mujoco_sim/joint_positions
+      scene_command: command_source/scene_command
+      tick: dora/timer/millis/5000
+    outputs:
+      - scene_update
+      - scene_state
+      - command_result
+    env:
+      ROBOT_CONFIG_MODULE: "move_group_demo.config.ur5e"
+
+  # --- OMPL RRT-Connect planner (dora-moveit2) ---
+  - id: planner
+    path: ../../dora-moveit2/examples/move_group_demo/move_group_demo/nodes/planner.py
+    inputs:
+      plan_request: command_source/plan_request
+      scene_update: planning_scene/scene_update
+    outputs:
+      - trajectory
+      - plan_status
+    env:
+      ROBOT_CONFIG_MODULE: "move_group_demo.config.ur5e"
+
+  # --- Inverse kinematics (dora-moveit2) ---
+  - id: ik_solver
+    path: ../../dora-moveit2/examples/move_group_demo/move_group_demo/nodes/ik_solver.py
+    inputs:
+      ik_request: command_source/ik_request
+    outputs:
+      - ik_solution
+      - ik_status
+    env:
+      ROBOT_CONFIG_MODULE: "move_group_demo.config.ur5e"
+
+  # --- Quintic-spline trajectory executor (dora-moveit2) ---
+  - id: trajectory_executor
+    path: ../../dora-moveit2/examples/move_group_demo/move_group_demo/nodes/trajectory_executor.py
+    inputs:
+      trajectory: planner/trajectory
+      cartesian_trajectory: command_source/cartesian_trajectory
+      joint_positions: mujoco_sim/joint_positions
+      tick: dora/timer/millis/50
+    outputs:
+      - joint_commands
+      - execution_status
+    env:
+      ROBOT_CONFIG_MODULE: "move_group_demo.config.ur5e"
+
+  # --- Robotiq 2F-85 gripper controller (this repo, Week 2) ---
+  - id: gripper_controller
+    path: ../simulation/gripper_controller.py
+    inputs:
+      gripper_command: command_source/gripper_command
+    outputs:
+      - gripper_ctrl
+      - gripper_status
+
+  # --- Command source: placeholder driver of the pipeline. ---
+  # Replaced by the agent bridge in Phase II (Week 5+). Declared `dynamic` so a
+  # script or REPL can attach and emit plan/scene/gripper commands while reading
+  # back state and status.
+  - id: command_source
+    path: dynamic
+    inputs:
+      joint_positions: mujoco_sim/joint_positions
+      plan_status: planner/plan_status
+      trajectory: planner/trajectory
+      execution_status: trajectory_executor/execution_status
+      ik_solution: ik_solver/ik_solution
+      ik_status: ik_solver/ik_status
+      scene_state: planning_scene/scene_state
+      command_result: planning_scene/command_result
+      gripper_status: gripper_controller/gripper_status
+    outputs:
+      - plan_request
+      - ik_request
+      - scene_command
+      - cartesian_trajectory
+      - gripper_command
