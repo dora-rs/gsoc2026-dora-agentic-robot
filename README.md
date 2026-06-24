@@ -7,6 +7,7 @@ GSOC 2026 | Agentic DORA — agent-driven framework for intelligent robot contro
 - **Week 1 — UR5e MuJoCo simulation environment.** Reproducible MuJoCo scene (UR5e + Robotiq 2F-85, red ball, green plate target) as a dora node. → **[docs/week1-simulation.md](docs/week1-simulation.md)**
 - **Week 2 — Robotiq 2F-85 gripper controller.** `gripper_command` → `gripper_ctrl` (0=open … 255=closed) with a self-running demo dataflow. → **[docs/week2-gripper.md](docs/week2-gripper.md)**
 - **Week 3 — Full motion-planning dataflow.** End-to-end wiring (sim ↔ executor ↔ planner ↔ ik ↔ scene ↔ gripper) + a static connectivity validator. → **[docs/week3-dataflow.md](docs/week3-dataflow.md)**
+- **Week 4 — Agent core + ToolRegistry.** The `Agent` tool-calling loop + `AgentConfig`, and a `ToolRegistry` with LRU lifecycle and base-tool pinning — the brain that replaces `command_source`. Self-running demo, no LLM needed. → **[docs/week4-agent-core.md](docs/week4-agent-core.md)**
 
 ```bash
 pip install -e .
@@ -16,6 +17,8 @@ MUJOCO_HEADLESS=1 dora start dataflows/ur5e_sim.yml             # Week 1: sim on
 MUJOCO_HEADLESS=1 dora start dataflows/ur5e_gripper_demo.yml    # Week 2: gripper demo
 MUJOCO_HEADLESS=1 dora start dataflows/ur5e_full_pipeline.yml   # Week 3: full pipeline (needs dora-moveit2)
 dora stop
+
+python -m agent.agent_demo                                      # Week 4: agent core demo (no LLM/dora/MuJoCo)
 ```
 
 Validate dataflow wiring without a simulator:
@@ -34,6 +37,7 @@ PYTHONPATH=. pytest tests/ -q
 ## Layout
 
 ```
+agent/           Agent loop, ToolRegistry, LLM-provider interface (Week 4+)
 simulation/      UR5e MuJoCo node, named poses, scene model
 dataflows/       dora dataflow configs
 scripts/         asset fetch helper
