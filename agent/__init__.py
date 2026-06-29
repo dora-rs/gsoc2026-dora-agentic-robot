@@ -6,7 +6,7 @@ loop, config, registry, the tool abstraction, and a deterministic `MockProvider`
 so everything is testable without an LLM or a running dataflow.
 
 Later phases extend this package (all interfaces here are forward-compatible):
-  - Week 5 — real `LlmProvider`s (OpenAI) + 3-layer failover
+  - Week 5 — real `OpenAIProvider` + 3-layer failover (this release)
   - Week 6 — SKILL.md loader + the dora bridge node
   - Week 7-8 — the dora transport / motion / introspection tools
 """
@@ -14,7 +14,14 @@ Later phases extend this package (all interfaces here are forward-compatible):
 from __future__ import annotations
 
 from .tool import Tool, ToolResult, ToolRegistry, FunctionTool
-from .provider import LlmProvider, ChatConfig, ChatResponse, MockProvider
+from .provider import (
+    LlmProvider,
+    ChatConfig,
+    ChatResponse,
+    MockProvider,
+    OpenAIProvider,
+)
+from .failover import RetryProvider, ProviderChain, AdaptiveRouter
 from .agent import Agent, AgentConfig
 
 __all__ = [
@@ -28,4 +35,8 @@ __all__ = [
     "ChatConfig",
     "ChatResponse",
     "MockProvider",
+    "OpenAIProvider",
+    "RetryProvider",
+    "ProviderChain",
+    "AdaptiveRouter",
 ]
