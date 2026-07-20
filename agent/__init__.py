@@ -6,9 +6,13 @@ loop, config, registry, the tool abstraction, and a deterministic `MockProvider`
 so everything is testable without an LLM or a running dataflow.
 
 Later phases extend this package (all interfaces here are forward-compatible):
-  - Week 5 — real `OpenAIProvider` + 3-layer failover (this release)
-  - Week 6 — SKILL.md loader + the dora bridge node
+  - Week 5 — real `OpenAIProvider` + 3-layer failover
+  - Week 6 — SKILL.md loader + the dora bridge node (this release)
   - Week 7-8 — the dora transport / motion / introspection tools
+
+The `SKILL.md` loader is exported here (pure Python). The dora bridge lives in
+the `agent.bridge` / `agent.bridge_node` submodules, imported explicitly so the
+core package stays free of the `pyarrow`/`dora` dependencies.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from .provider import (
     OpenAIProvider,
 )
 from .failover import RetryProvider, ProviderChain, AdaptiveRouter
+from .skills import SkillInfo, load_skill, load_skills, skills_to_prompt
 from .agent import Agent, AgentConfig
 
 __all__ = [
@@ -39,4 +44,8 @@ __all__ = [
     "RetryProvider",
     "ProviderChain",
     "AdaptiveRouter",
+    "SkillInfo",
+    "load_skill",
+    "load_skills",
+    "skills_to_prompt",
 ]

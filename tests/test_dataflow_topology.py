@@ -8,10 +8,16 @@ from simulation.dataflow_check import check, load_nodes
 
 DATAFLOWS = Path(__file__).resolve().parents[1] / "dataflows"
 FULL = DATAFLOWS / "ur5e_full_pipeline.yml"
+AGENT = DATAFLOWS / "ur5e_agent_demo.yml"
 
 PIPELINE_NODES = {
     "mujoco_sim", "planning_scene", "planner", "ik_solver",
     "trajectory_executor", "gripper_controller", "command_source",
+}
+
+AGENT_NODES = {
+    "mujoco_sim", "planning_scene", "planner", "ik_solver",
+    "trajectory_executor", "gripper_controller", "agent_bridge", "mission_source",
 }
 
 
@@ -57,6 +63,32 @@ def test_all_six_subsystems_chain_to_sim():
     # planning_scene -> planner, gripper_controller -> mujoco_sim.
     assert nodes["trajectory_executor"].inputs["joint_positions"] == "mujoco_sim/joint_positions"
     assert nodes["planning_scene"].inputs["robot_state"] == "mujoco_sim/joint_positions"
+
+
+def test_agent_dataflow_has_no_dangling_edges():
+    result = check(str(AGENT))
+    assert result.ok, "dangling wires:\n" + "\n".join(result.errors)
+
+
+def test_agent_dataflow_nodes_present():
+    assert set(load_nodes(str(AGENT))) == AGENT_NODES
+
+
+def test_agent_bridge_replaces_command_source():
+    """The agent_bridge drives the pipeline inputs command_source used to drive."""
+    nodes = load_nodes(str(AGENT))
+    assert "command_source" not in nodes
+    assert nodes["planner"].inputs["plan_request"] == "agent_bridge/plan_request"
+    assert nodes["gripper_controller"].inputs["gripper_command"] == "agent_bridge/gripper_command"
+    assert nodes["planning_scene"].inputs["scene_command"] == "agent_bridge/scene_command"
+
+
+def test_agent_bridge_reads_mission_and_sensors():
+    nodes = load_nodes(str(AGENT))
+    bridge = nodes["agent_bridge"]
+    assert bridge.inputs["user_command"] == "mission_source/user_command"
+    assert bridge.inputs["joint_positions"] == "mujoco_sim/joint_positions"
+    assert "agent_response" in bridge.outputs
 
 
 def test_detects_dangling_edge(tmp_path):

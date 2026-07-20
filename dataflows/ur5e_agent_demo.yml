@@ -1,0 +1,133 @@
+# Week 6 — Agent-driven motion pipeline (UR5e + Robotiq 2F-85).
+#
+# Same motion-planning pipeline as Week 3, but the `command_source` placeholder
+# is replaced by `agent_bridge` — the Week 4 Agent (Week 5 provider stack, Week 6
+# skills) driving the dataflow from a natural-language mission. A tiny
+# `mission_source` emits one command so the demo is self-running.
+#
+#   mission_source -> agent_bridge -> planner/scene/gripper -> executor -> mujoco_sim
+#   sensor/status feedback flows back into agent_bridge's cache.
+#
+# Motion-planning nodes (planning_scene, planner, ik_solver, trajectory_executor)
+# come from dora-rs/dora-moveit2; this repo provides mujoco_sim, gripper_controller,
+# and agent_bridge. See docs/week6-agent-bridge.md for setup.
+#
+# Run (mock provider — no API key; needs dora-moveit2 installed + meshes fetched):
+#   dora up
+#   MUJOCO_HEADLESS=1 OCTOS_PROVIDER=mock dora start dataflows/ur5e_agent_demo.yml
+#   dora stop
+# For a real LLM: set OCTOS_PROVIDER=openai and OPENAI_API_KEY.
+
+nodes:
+  # --- Simulation (this repo) ---
+  - id: mujoco_sim
+    path: ../simulation/mujoco_node.py
+    inputs:
+      tick: dora/timer/millis/10
+      control_input: trajectory_executor/joint_commands
+      gripper_ctrl: gripper_controller/gripper_ctrl
+    outputs:
+      - joint_positions
+      - joint_velocities
+      - sensor_data
+    env:
+      MODEL_NAME: ../simulation/models/ur5e_scene.xml
+
+  # --- Planning scene: collision objects (dora-moveit2) ---
+  - id: planning_scene
+    path: ../../dora-moveit2/examples/move_group_demo/move_group_demo/nodes/planning_scene.py
+    inputs:
+      robot_state: mujoco_sim/joint_positions
+      scene_command: agent_bridge/scene_command
+      tick: dora/timer/millis/5000
+    outputs:
+      - scene_update
+      - scene_state
+      - command_result
+    env:
+      ROBOT_CONFIG_MODULE: "move_group_demo.config.ur5e"
+
+  # --- OMPL RRT-Connect planner (dora-moveit2) ---
+  - id: planner
+    path: ../../dora-moveit2/examples/move_group_demo/move_group_demo/nodes/planner.py
+    inputs:
+      plan_request: agent_bridge/plan_request
+      scene_update: planning_scene/scene_update
+    outputs:
+      - trajectory
+      - plan_status
+    env:
+      ROBOT_CONFIG_MODULE: "move_group_demo.config.ur5e"
+
+  # --- Inverse kinematics (dora-moveit2) ---
+  - id: ik_solver
+    path: ../../dora-moveit2/examples/move_group_demo/move_group_demo/nodes/ik_solver.py
+    inputs:
+      ik_request: agent_bridge/ik_request
+    outputs:
+      - ik_solution
+      - ik_status
+    env:
+      ROBOT_CONFIG_MODULE: "move_group_demo.config.ur5e"
+
+  # --- Quintic-spline trajectory executor (dora-moveit2) ---
+  - id: trajectory_executor
+    path: ../../dora-moveit2/examples/move_group_demo/move_group_demo/nodes/trajectory_executor.py
+    inputs:
+      trajectory: planner/trajectory
+      cartesian_trajectory: agent_bridge/cartesian_trajectory
+      joint_positions: mujoco_sim/joint_positions
+      tick: dora/timer/millis/50
+    outputs:
+      - joint_commands
+      - execution_status
+    env:
+      ROBOT_CONFIG_MODULE: "move_group_demo.config.ur5e"
+
+  # --- Robotiq 2F-85 gripper controller (this repo, Week 2) ---
+  - id: gripper_controller
+    path: ../simulation/gripper_controller.py
+    inputs:
+      gripper_command: agent_bridge/gripper_command
+    outputs:
+      - gripper_ctrl
+      - gripper_status
+
+  # --- Agent bridge: the LLM-driven pipeline driver (this repo, Week 6). ---
+  # Replaces the Week 3 `command_source` placeholder. Reads a natural-language
+  # mission on `user_command`, drives the pipeline through its dora tools, and
+  # emits the agent's reply on `agent_response`.
+  - id: agent_bridge
+    path: ../agent/bridge_node.py
+    inputs:
+      user_command: mission_source/user_command
+      joint_positions: mujoco_sim/joint_positions
+      plan_status: planner/plan_status
+      execution_status: trajectory_executor/execution_status
+      ik_solution: ik_solver/ik_solution
+      ik_status: ik_solver/ik_status
+      scene_state: planning_scene/scene_state
+      command_result: planning_scene/command_result
+      gripper_status: gripper_controller/gripper_status
+    outputs:
+      - plan_request
+      - ik_request
+      - scene_command
+      - cartesian_trajectory
+      - gripper_command
+      - agent_response
+    env:
+      OCTOS_PROVIDER: mock
+      OCTOS_SKILLS_DIR: ../skills
+
+  # --- Mission source: emits one natural-language command so the demo runs. ---
+  # Swap for an interactive/dynamic source to type missions live.
+  - id: mission_source
+    path: ../simulation/mission_source.py
+    inputs:
+      tick: dora/timer/millis/3000
+      agent_response: agent_bridge/agent_response
+    outputs:
+      - user_command
+    env:
+      MISSION: "Move the arm home and close the gripper."
