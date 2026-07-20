@@ -1,0 +1,375 @@
+"""Motion + introspection tools (Week 7) — the semantic layer above transport.
+
+Week 6 gave the agent three *transport* tools (`dora_read`/`dora_send`/
+`dora_call`): correct, but low level. To move the arm the model had to know the
+output id, the request schema, the matching status input, and that a plan must be
+followed by execution. That is pipeline plumbing, not robotics, and every bit of
+it is a chance for the model to get it wrong.
+
+Week 7 adds tools phrased in the robot's own terms, each one composed from the
+Week 6 bridge:
+
+    dora_move      move to a named pose or explicit joint vector — plans, then
+                   waits for the motion to actually finish
+    dora_gripper   open/close the Robotiq 2F-85 and wait for its status
+    dora_perceive  one fused snapshot: arm state, gripper, scene objects
+    dora_list      catalogue — named poses, dataflow inputs/outputs, scene objects
+    skill          list dormant skills and pull one into the conversation
+
+The transport tools stay registered: the semantic tools cover the common path,
+and `dora_send`/`dora_call` remain the escape hatch for anything they do not.
+Everything here runs against the injected bridge node, so it is unit-testable
+with no dora daemon, no MuJoCo, and no LLM.
+"""
+
+from __future__ import annotations
+
+import json
+
+from simulation.named_poses import NAMED_POSES, NUM_JOINTS, SCENE_OBJECTS
+from .bridge import (
+    DoraAgentBridge,
+    DoraCallTool,
+    DoraReadTool,
+    DoraSendTool,
+)
+from .skills import SkillRegistry
+from .tool import Tool, ToolRegistry, ToolResult
+
+# Inputs the agent can read, and outputs it can write, on this dataflow.
+DATAFLOW_INPUTS = [
+    "joint_positions",
+    "joint_velocities",
+    "plan_status",
+    "execution_status",
+    "ik_solution",
+    "ik_status",
+    "scene_state",
+    "command_result",
+    "gripper_status",
+]
+DATAFLOW_OUTPUTS = [
+    "plan_request",
+    "ik_request",
+    "scene_command",
+    "cartesian_trajectory",
+    "gripper_command",
+    "agent_response",
+]
+
+# The gripper controller's wire vocabulary (see simulation/gripper_controller.py).
+GRIPPER_ACTIONS = ("open", "close")
+
+DEFAULT_MOVE_TIMEOUT = 60.0
+DEFAULT_GRIPPER_TIMEOUT = 15.0
+
+
+def _err(message: str) -> ToolResult:
+    """A failed ToolResult the agent can read and recover from."""
+    return ToolResult(output=json.dumps({"error": message}), success=False)
+
+
+class DoraMoveTool(Tool):
+    """Move the arm to a named pose or explicit joint vector, and wait for it."""
+
+    def __init__(self, bridge: DoraAgentBridge):
+        self._bridge = bridge
+
+    def name(self) -> str:
+        return "dora_move"
+
+    def description(self) -> str:
+        return (
+            "Move the arm to a target configuration and wait for the motion to "
+            "complete. `target` is either a named pose (" +
+            ", ".join(sorted(NAMED_POSES)) +
+            f") or a list of {NUM_JOINTS} joint angles in radians. The start "
+            "configuration is read from the current joint_positions. Returns the "
+            "plan status and, when the executor reports back, the execution status."
+        )
+
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "description": "Named pose, or a list of 6 joint angles (radians).",
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "array", "items": {"type": "number"}},
+                    ],
+                },
+                "timeout_secs": {"type": "number"},
+            },
+            "required": ["target"],
+        }
+
+    def tags(self) -> list[str]:
+        return ["motion", "write"]
+
+    def execute(self, args: dict) -> ToolResult:
+        goal = self._resolve_target(args.get("target"))
+        if isinstance(goal, str):  # resolution failed, `goal` is the message
+            return _err(goal)
+
+        timeout = float(args.get("timeout_secs", DEFAULT_MOVE_TIMEOUT))
+        self._bridge.drain()
+        start = self._bridge.cache.get("joint_positions")
+        if start is None:
+            return _err("no joint_positions cached yet — call dora_perceive first")
+
+        request = {"start": list(start[0]), "goal": goal}
+        self._bridge.send_json("plan_request", request)
+        plan = self._bridge.wait_for_input("plan_status", timeout)
+        if plan is None:
+            return _err(f"timed out after {timeout}s waiting for plan_status")
+        if isinstance(plan, dict) and plan.get("success") is False:
+            return _err(f"planning failed: {plan.get('message', plan)}")
+
+        # The trajectory goes planner -> executor directly; the executor reports
+        # completion on execution_status. A pipeline without an executor still
+        # counts as a successful plan, so a missing status is not an error.
+        execution = self._bridge.wait_for_input("execution_status", timeout)
+        return ToolResult(output=json.dumps(
+            {"goal": goal, "plan_status": plan, "execution_status": execution},
+            default=str,
+        ))
+
+    def _resolve_target(self, target) -> list[float] | str:
+        """Return the goal joint vector, or an error message string."""
+        if isinstance(target, str):
+            pose = NAMED_POSES.get(target.lower().strip())
+            if pose is None:
+                return f"unknown pose '{target}'. Known poses: {sorted(NAMED_POSES)}"
+            return list(pose)
+        if isinstance(target, (list, tuple)):
+            if len(target) != NUM_JOINTS:
+                return f"expected {NUM_JOINTS} joint angles, got {len(target)}"
+            try:
+                return [float(v) for v in target]
+            except (TypeError, ValueError):
+                return "joint angles must be numbers"
+        return "target must be a named pose or a list of joint angles"
+
+
+class DoraGripperTool(Tool):
+    """Open or close the Robotiq 2F-85 and wait for its status."""
+
+    def __init__(self, bridge: DoraAgentBridge):
+        self._bridge = bridge
+
+    def name(self) -> str:
+        return "dora_gripper"
+
+    def description(self) -> str:
+        return (
+            "Open or close the Robotiq 2F-85 gripper and wait for it to report "
+            "back. Close to grasp an object, open to release it."
+        )
+
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": list(GRIPPER_ACTIONS)},
+                "timeout_secs": {"type": "number"},
+            },
+            "required": ["action"],
+        }
+
+    def tags(self) -> list[str]:
+        return ["motion", "gripper", "write"]
+
+    def execute(self, args: dict) -> ToolResult:
+        action = str(args.get("action", "")).lower().strip()
+        if action not in GRIPPER_ACTIONS:
+            return _err(f"action must be one of {list(GRIPPER_ACTIONS)}")
+
+        timeout = float(args.get("timeout_secs", DEFAULT_GRIPPER_TIMEOUT))
+        self._bridge.send_json("gripper_command", {"action": action})
+        status = self._bridge.wait_for_input("gripper_status", timeout)
+        if status is None:
+            return _err(f"timed out after {timeout}s waiting for gripper_status")
+        return ToolResult(output=json.dumps({"action": action, "gripper_status": status},
+                                            default=str))
+
+
+class DoraPerceiveTool(Tool):
+    """One fused snapshot of the world: arm, gripper, and scene objects."""
+
+    def __init__(self, bridge: DoraAgentBridge):
+        self._bridge = bridge
+
+    def name(self) -> str:
+        return "dora_perceive"
+
+    def description(self) -> str:
+        return (
+            "Get a single snapshot of the current world state: arm joint "
+            "positions (with the nearest named pose), gripper status, and the "
+            "known scene objects with their positions. Call this before planning."
+        )
+
+    def input_schema(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    def tags(self) -> list[str]:
+        return ["perception", "read"]
+
+    def execute(self, args: dict) -> ToolResult:
+        self._bridge.drain()
+        joints = self._bridge.read_cached("joint_positions")
+        snapshot: dict = {
+            "joint_positions": joints.get("data"),
+            "joint_positions_age_ms": joints.get("age_ms"),
+            "gripper_status": self._bridge.read_cached("gripper_status").get("data"),
+            "scene_state": self._bridge.read_cached("scene_state").get("data"),
+            "scene_objects": SCENE_OBJECTS,
+        }
+        if isinstance(snapshot["joint_positions"], list):
+            snapshot["nearest_named_pose"] = _nearest_pose(snapshot["joint_positions"])
+        else:
+            snapshot["error"] = "no joint_positions cached yet"
+        return ToolResult(output=json.dumps(snapshot, default=str))
+
+
+class DoraListTool(Tool):
+    """Catalogue what the agent can address: poses, wires, scene objects."""
+
+    _KINDS = ("poses", "inputs", "outputs", "objects", "all")
+
+    def __init__(self, bridge: DoraAgentBridge):
+        self._bridge = bridge
+
+    def name(self) -> str:
+        return "dora_list"
+
+    def description(self) -> str:
+        return (
+            "List what is available to address in this dataflow: 'poses' (named "
+            "arm configurations), 'inputs' (readable dataflow inputs), 'outputs' "
+            "(writable dataflow outputs), 'objects' (scene objects), or 'all'."
+        )
+
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {"kind": {"type": "string", "enum": list(self._KINDS)}},
+        }
+
+    def tags(self) -> list[str]:
+        return ["introspection", "read"]
+
+    def execute(self, args: dict) -> ToolResult:
+        kind = str(args.get("kind", "all")).lower().strip() or "all"
+        if kind not in self._KINDS:
+            return _err(f"kind must be one of {list(self._KINDS)}")
+
+        catalogue = {
+            "poses": {name: list(vals) for name, vals in NAMED_POSES.items()},
+            "inputs": DATAFLOW_INPUTS,
+            "outputs": DATAFLOW_OUTPUTS,
+            "objects": SCENE_OBJECTS,
+        }
+        result = catalogue if kind == "all" else {kind: catalogue[kind]}
+        # Show which inputs actually have data, so the model can tell a wire that
+        # exists from one that has produced something.
+        if kind in ("inputs", "all"):
+            result["cached_inputs"] = sorted(self._bridge.cache)
+        return ToolResult(output=json.dumps(result, default=str))
+
+
+class SkillTool(Tool):
+    """List dormant skills and pull one into the conversation on demand."""
+
+    def __init__(self, registry: SkillRegistry):
+        self._skills = registry
+
+    def name(self) -> str:
+        return "skill"
+
+    def description(self) -> str:
+        return (
+            "Access the skill library — procedural knowledge that is not loaded "
+            "into your system prompt by default. Use action='list' to see the "
+            "available skills, then action='activate' with a name to read one in "
+            "full. Activate the relevant skill before attempting a multi-step "
+            "task such as picking and placing an object."
+        )
+
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "activate"]},
+                "name": {"type": "string"},
+            },
+            "required": ["action"],
+        }
+
+    def tags(self) -> list[str]:
+        return ["skills", "read"]
+
+    def execute(self, args: dict) -> ToolResult:
+        action = str(args.get("action", "list")).lower().strip()
+        if action == "list":
+            return ToolResult(output=json.dumps({"skills": self._skills.catalogue()}))
+        if action != "activate":
+            return _err("action must be 'list' or 'activate'")
+
+        name = str(args.get("name", "")).strip()
+        if not name:
+            return _err("name is required to activate a skill")
+        try:
+            skill = self._skills.activate(name)
+        except KeyError as exc:
+            return _err(str(exc).strip("\"'"))
+        return ToolResult(output=json.dumps({
+            "name": skill.name,
+            "version": skill.version,
+            "content": skill.content,
+        }))
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _nearest_pose(joints: list[float], tolerance: float = 0.1) -> str | None:
+    """Name of the closest named pose within `tolerance` (max per-joint error)."""
+    best_name, best_error = None, float("inf")
+    for name, pose in NAMED_POSES.items():
+        if len(pose) != len(joints):
+            continue
+        error = max(abs(a - b) for a, b in zip(pose, joints))
+        if error < best_error:
+            best_name, best_error = name, error
+    return best_name if best_error <= tolerance else None
+
+
+def build_full_registry(
+    bridge: DoraAgentBridge,
+    skills: SkillRegistry | None = None,
+) -> ToolRegistry:
+    """Register the Week 6 transport tools plus the Week 7 semantic tools.
+
+    The semantic tools (`dora_move`, `dora_gripper`, `dora_perceive`,
+    `dora_list`) and `skill` are pinned as base tools — they are the ones the
+    model needs on every mission, so LRU eviction must never take them. The raw
+    transport tools stay registered as the escape hatch.
+    """
+    registry = ToolRegistry()
+    registry.register(DoraReadTool(bridge))
+    registry.register(DoraSendTool(bridge))
+    registry.register(DoraCallTool(bridge))
+    registry.register(DoraMoveTool(bridge))
+    registry.register(DoraGripperTool(bridge))
+    registry.register(DoraPerceiveTool(bridge))
+    registry.register(DoraListTool(bridge))
+
+    base = ["dora_move", "dora_gripper", "dora_perceive", "dora_list"]
+    if skills is not None:
+        registry.register(SkillTool(skills))
+        base.append("skill")
+    registry.set_base_tools(base)
+    return registry

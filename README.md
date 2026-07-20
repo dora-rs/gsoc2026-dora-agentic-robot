@@ -10,6 +10,7 @@ GSOC 2026 | Agentic DORA — agent-driven framework for intelligent robot contro
 - **Week 4 — Agent core + ToolRegistry.** The `Agent` tool-calling loop + `AgentConfig`, and a `ToolRegistry` with LRU lifecycle and base-tool pinning — the brain that replaces `command_source`. Self-running demo, no LLM needed. → **[docs/week4-agent-core.md](docs/week4-agent-core.md)**
 - **Week 5 — LLM providers + failover.** A real `OpenAIProvider` (GPT-4o, token metrics) and a 3-layer failover stack (`RetryProvider` → `ProviderChain` → `AdaptiveRouter`), each an `LlmProvider` that drops straight into the `Agent` loop. Self-running failover demo, no API key needed. → **[docs/week5-llm-providers.md](docs/week5-llm-providers.md)**
 - **Week 6 — Agent bridge + skills.** The dora bridge node that replaces `command_source`: the `Agent` drives the motion pipeline through `dora_read`/`dora_send`/`dora_call` tools, with behaviour authored as `SKILL.md` files injected into the system prompt. Self-running in-process demo, no dora/MuJoCo/LLM needed. → **[docs/week6-agent-bridge.md](docs/week6-agent-bridge.md)**
+- **Week 7 — Motion tools + on-demand skills + a real dataflow test.** Robot-level tools (`dora_move`, `dora_gripper`, `dora_perceive`, `dora_list`) instead of raw transport, dormant skills the agent activates mid-mission, a full pick-and-place, and an integration test that runs an actual `dora` dataflow — which caught two bugs no in-process test could reach. → **[docs/week7-motion-tools.md](docs/week7-motion-tools.md)**
 
 ```bash
 pip install -e .
@@ -24,6 +25,9 @@ python -m agent.agent_demo                                      # Week 4: agent 
 python -m agent.failover_demo                                   # Week 5: 3-layer failover demo (no API key)
 python -m agent.bridge_demo                                     # Week 6: agent-bridge demo (no dora/MuJoCo/LLM)
 MUJOCO_HEADLESS=1 OCTOS_PROVIDER=mock dora start dataflows/ur5e_agent_demo.yml   # Week 6: agent drives the live pipeline (needs dora-moveit2)
+
+python -m agent.pick_place_demo                                 # Week 7: pick-and-place, verified by outcome
+dora run dataflows/ur5e_agent_loopback.yml --stop-after 25s     # Week 7: real dora dataflow, no external deps
 ```
 
 Validate dataflow wiring without a simulator:
@@ -36,14 +40,15 @@ Tests (no MuJoCo/dora/display required):
 
 ```bash
 pip install -e ".[dev]"
-PYTHONPATH=. pytest tests/ -q
+PYTHONPATH=. pytest tests/ -q                       # includes a real dora dataflow run (~27s)
+PYTHONPATH=. pytest tests/ -q -m "not integration"  # unit tests only
 ```
 
 ## Layout
 
 ```
-agent/           Agent loop, ToolRegistry, LLM providers + failover, dora bridge, SKILL.md loader
-simulation/      UR5e MuJoCo node, gripper + mission sources, named poses, scene model
+agent/           Agent loop, ToolRegistry, LLM providers + failover, dora bridge, robot tools, skills
+simulation/      UR5e MuJoCo node, gripper + mission sources, pipeline stub, named poses, scene model
 skills/          SKILL.md domain knowledge injected into the agent's system prompt
 dataflows/       dora dataflow configs
 scripts/         asset fetch helper

@@ -1,8 +1,12 @@
-"""Unit tests for the Week 6 SKILL.md loader — no dora/LLM required."""
+"""Unit tests for the SKILL.md loader (Week 6) and on-demand activation (Week 7)."""
 
 from pathlib import Path
 
+import pytest
+
 from agent.skills import (
+    SkillInfo,
+    SkillRegistry,
     load_skill,
     load_skills,
     parse_frontmatter,
@@ -90,9 +94,61 @@ def test_skills_to_prompt_always_only_filters(tmp_path):
 
 def test_repo_ships_always_on_skills():
     skills = load_skills(str(REPO_SKILLS))
-    names = {s.name for s in skills}
-    assert {"ur5e-arm", "dora-transport"} <= names
-    assert all(s.always for s in skills)  # both are always-on
+    by_name = {s.name: s for s in skills}
+    assert {"ur5e-arm", "dora-transport"} <= set(by_name)
+    assert by_name["ur5e-arm"].always
+    assert by_name["dora-transport"].always
+
+
+def test_pick_and_place_ships_dormant():
+    """The procedure is opt-in — it must not bloat every system prompt."""
+    by_name = {s.name: s for s in load_skills(str(REPO_SKILLS))}
+    assert "pick-and-place" in by_name
+    assert not by_name["pick-and-place"].always
+
+
+# --- SkillRegistry: on-demand activation (Week 7) -------------------------
+
+def _skill(name, always=False):
+    return SkillInfo(name=name, description="", version="1.0.0", author="",
+                     always=always, content=f"body of {name}", path="")
+
+
+def test_always_skills_start_active_and_others_dormant():
+    registry = SkillRegistry([_skill("core", always=True), _skill("extra")])
+    assert [s.name for s in registry.active()] == ["core"]
+    assert [s.name for s in registry.dormant()] == ["extra"]
+
+
+def test_activate_moves_a_skill_from_dormant_to_active():
+    registry = SkillRegistry([_skill("extra")])
+    assert registry.activate("extra").content == "body of extra"
+    assert registry.is_active("extra")
+    assert registry.dormant() == []
+
+
+def test_activate_is_idempotent():
+    registry = SkillRegistry([_skill("extra")])
+    registry.activate("extra")
+    registry.activate("extra")
+    assert [s.name for s in registry.active()] == ["extra"]
+
+
+def test_activate_unknown_skill_lists_the_alternatives():
+    registry = SkillRegistry([_skill("extra")])
+    with pytest.raises(KeyError, match="extra"):
+        registry.activate("missing")
+
+
+def test_catalogue_reports_activation_state():
+    registry = SkillRegistry([_skill("core", always=True), _skill("extra")])
+    catalogue = {e["name"]: e["active"] for e in registry.catalogue()}
+    assert catalogue == {"core": True, "extra": False}
+
+
+def test_registry_loads_the_repo_skills():
+    registry = SkillRegistry(load_skills(str(REPO_SKILLS)))
+    assert [s.name for s in registry.dormant()] == ["pick-and-place"]
 
 
 def load_skill_from_text(tmp_path, name, body, always):

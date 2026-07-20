@@ -1,11 +1,16 @@
-"""Agent bridge dora node (Week 6) — the pipeline driver that replaces command_source.
+"""Agent bridge dora node (Week 6, extended Week 7) — the pipeline driver.
 
 Runs the Week 4 `Agent` (with the Week 5 provider stack and Week 6 skills) as a
 live dora node. It reads natural-language missions on `user_command`, drives the
-motion pipeline through the dora transport tools, and emits the agent's text on
+motion pipeline through the robot tools, and emits the agent's text on
 `agent_response`; all sensor/status inputs are cached for the tools to read.
 
-    dora start dataflows/ur5e_agent_demo.yml
+Week 7 swaps the transport-only registry for `build_full_registry` — the
+`dora_move`/`dora_gripper`/`dora_perceive`/`dora_list` semantic tools plus the
+`skill` tool backed by a `SkillRegistry`, so dormant skills load on demand.
+
+    dora start dataflows/ur5e_agent_demo.yml     # live pipeline
+    dora run dataflows/ur5e_agent_loopback.yml   # no external deps
 
 Env vars:
   OCTOS_PROVIDER   provider — "mock" (default, no API key) or "openai"
@@ -28,17 +33,26 @@ import sys
 import pyarrow as pa
 from dora import Node
 
-from .agent import Agent, AgentConfig
-from .bridge import DoraAgentBridge, build_bridge_registry, compose_system_prompt
-from .provider import ChatResponse, LlmProvider, MockProvider, OpenAIProvider
-from .failover import RetryProvider
-from .skills import load_skills
+# dora spawns a node by *path*, so this file runs as a top-level script with no
+# parent package — relative imports would fail. Put the repo root on sys.path and
+# import absolutely, so the same file works under `dora start` and `python -m`.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from agent.agent import Agent, AgentConfig  # noqa: E402
+from agent.bridge import DoraAgentBridge, compose_system_prompt  # noqa: E402
+from agent.motion_tools import build_full_registry  # noqa: E402
+from agent.provider import (  # noqa: E402
+    ChatResponse, LlmProvider, MockProvider, OpenAIProvider,
+)
+from agent.failover import RetryProvider  # noqa: E402
+from agent.skills import SkillRegistry, load_skills  # noqa: E402
 
 BASE_SYSTEM_PROMPT = (
     "You are a robot control agent operating a UR5e 6-DOF arm with a Robotiq "
     "2F-85 gripper in MuJoCo simulation, driving a dora motion-planning pipeline. "
-    "Read joint_positions before planning, plan motions with dora_call on "
-    "plan_request, and wait for each motion to finish before the next command."
+    "Call dora_perceive before planning, move the arm with dora_move (one motion "
+    "at a time — it returns when the motion is done), and drive the gripper with "
+    "dora_gripper. For any multi-step task, activate the matching skill first."
 )
 
 
@@ -62,22 +76,34 @@ def build_provider() -> LlmProvider:
 
 
 def _mock_script() -> list[ChatResponse]:
-    """A tiny scripted mission so OCTOS_PROVIDER=mock drives the pipeline visibly."""
+    """The pick-and-place mission, scripted, so OCTOS_PROVIDER=mock needs no API key.
+
+    This is the exact tool sequence a real LLM is expected to produce from the
+    `pick-and-place` skill: discover the skill, activate it, perceive, then walk
+    the grasp/place procedure. Scripting it keeps the *pipeline* under test
+    deterministic — the dataflow, bridge, and tools are all real.
+    """
+    def call(name: str, args: dict) -> ChatResponse:
+        return ChatResponse(tool_calls=[MockProvider.tool_call(name, args)],
+                            finish_reason="tool_calls")
+
     return [
+        call("skill", {"action": "list"}),
+        call("skill", {"action": "activate", "name": "pick-and-place"}),
+        call("dora_perceive", {}),
+        call("dora_gripper", {"action": "open"}),
+        call("dora_move", {"target": "above_ball"}),
+        call("dora_move", {"target": "grasp_ball"}),
+        call("dora_gripper", {"action": "close"}),
+        call("dora_move", {"target": "lift"}),
+        call("dora_move", {"target": "above_plate"}),
+        call("dora_move", {"target": "place_plate"}),
+        call("dora_gripper", {"action": "open"}),
+        call("dora_move", {"target": "home"}),
         ChatResponse(
-            tool_calls=[MockProvider.tool_call("dora_read", {"input_id": "joint_positions"})],
-            finish_reason="tool_calls",
-        ),
-        ChatResponse(
-            tool_calls=[MockProvider.tool_call("dora_call", {
-                "output_id": "plan_request",
-                "data": {"goal": "home"},
-                "response_id": "plan_status",
-            })],
-            finish_reason="tool_calls",
-        ),
-        ChatResponse(content="Read the arm state and planned a motion home.",
-                     finish_reason="stop"),
+            content="Pick-and-place complete: grasped the red ball, placed it on "
+                    "the green plate, and returned the arm home.",
+            finish_reason="stop"),
     ]
 
 
@@ -106,11 +132,14 @@ def main() -> None:
     bridge.drain(1.0)  # prime the sensor cache
 
     provider = build_provider()
-    registry = build_bridge_registry(bridge)
     skills = load_skills(_default_skills_dir())
     for skill in skills:
         print(f"[bridge] loaded skill '{skill.name}' v{skill.version} (always={skill.always})")
 
+    # `always: true` skills go into the prompt; the rest stay dormant until the
+    # agent activates them through the `skill` tool.
+    skill_registry = SkillRegistry(skills)
+    registry = build_full_registry(bridge, skill_registry)
     system_prompt = compose_system_prompt(BASE_SYSTEM_PROMPT, skills)
     agent = Agent(provider, registry, AgentConfig(), system_prompt=system_prompt)
 
@@ -120,6 +149,13 @@ def main() -> None:
         import subprocess
         subprocess.Popen(["dora", "stop"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return
+
+    # The prime drain above caches *every* input it sees, `user_command` included.
+    # A mission published while this node was still starting up would otherwise
+    # sit in the cache forever and never run, so claim it before looping.
+    pending = bridge.cache.pop("user_command", None)
+    if pending is not None and isinstance(pending[0], str):
+        _run_mission(agent, bridge, node, pending[0])
 
     print("[bridge] persistent mode — waiting for commands on 'user_command'")
     for event in node:

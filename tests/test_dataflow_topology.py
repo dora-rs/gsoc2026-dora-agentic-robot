@@ -3,12 +3,16 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from simulation.dataflow_check import check, load_nodes
 
 DATAFLOWS = Path(__file__).resolve().parents[1] / "dataflows"
 FULL = DATAFLOWS / "ur5e_full_pipeline.yml"
 AGENT = DATAFLOWS / "ur5e_agent_demo.yml"
+LOOPBACK = DATAFLOWS / "ur5e_agent_loopback.yml"
+
+LOOPBACK_NODES = {"pipeline_stub", "gripper_controller", "agent_bridge", "mission_source"}
 
 PIPELINE_NODES = {
     "mujoco_sim", "planning_scene", "planner", "ik_solver",
@@ -89,6 +93,44 @@ def test_agent_bridge_reads_mission_and_sensors():
     assert bridge.inputs["user_command"] == "mission_source/user_command"
     assert bridge.inputs["joint_positions"] == "mujoco_sim/joint_positions"
     assert "agent_response" in bridge.outputs
+
+
+# --- Week 7 loopback dataflow --------------------------------------------
+
+def test_loopback_dataflow_has_no_dangling_edges():
+    result = check(str(LOOPBACK))
+    assert result.ok, "dangling wires:\n" + "\n".join(result.errors)
+
+
+def test_loopback_dataflow_nodes_present():
+    assert set(load_nodes(str(LOOPBACK))) == LOOPBACK_NODES
+
+
+def test_loopback_uses_only_repo_nodes():
+    """It must run without dora-moveit2 — every node path is inside this repo."""
+    spec = yaml.safe_load(LOOPBACK.read_text())
+    paths = [node.get("path", "") for node in spec["nodes"]]
+    assert paths, "no node paths found"
+    for path in paths:
+        assert path.startswith("../"), path
+        assert "dora-moveit2" not in path, path
+        assert (DATAFLOWS / path).resolve().is_file(), path
+
+
+def test_loopback_bridge_is_the_same_node_as_the_live_dataflow():
+    """The agent side is real; only the motion stack is substituted."""
+    live = load_nodes(str(AGENT))["agent_bridge"]
+    loop = load_nodes(str(LOOPBACK))["agent_bridge"]
+    assert set(loop.outputs) == set(live.outputs)
+    assert loop.inputs["user_command"] == live.inputs["user_command"]
+
+
+def test_loopback_stub_closes_the_motion_loop():
+    nodes = load_nodes(str(LOOPBACK))
+    stub = nodes["pipeline_stub"]
+    assert stub.inputs["plan_request"] == "agent_bridge/plan_request"
+    assert {"joint_positions", "plan_status", "execution_status"} <= set(stub.outputs)
+    assert nodes["agent_bridge"].inputs["joint_positions"] == "pipeline_stub/joint_positions"
 
 
 def test_detects_dangling_edge(tmp_path):

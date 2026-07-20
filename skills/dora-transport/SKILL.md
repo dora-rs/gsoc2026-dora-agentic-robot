@@ -1,14 +1,18 @@
 ---
 name: dora-transport
-description: How to use the dora transport tools to read state and send commands
-version: 1.0.0
+description: How to use the raw dora transport tools when the robot tools do not cover a case
+version: 1.1.0
 author: 23garyd
 always: true
 ---
 
 # Dora transport tools
 
-You drive the robot through three tools that bridge to the dora dataflow.
+**Prefer the robot tools.** `dora_move`, `dora_gripper`, `dora_perceive`, and
+`dora_list` cover normal operation and handle the request/response sequencing for
+you. The three transport tools below are the escape hatch — reach for them only
+when no robot tool does what you need (raw IK requests, scene commands,
+Cartesian trajectories, or reading an input the robot tools do not surface).
 
 ## `dora_read`
 

@@ -12,6 +12,10 @@ system prompt so the behaviour is authored in Markdown, not hard-coded in Python
 `load_skills(dir)` reads every `<subdir>/SKILL.md`; `skills_to_prompt(skills)`
 concatenates their bodies into a prompt section. Frontmatter is parsed with a
 tiny hand-rolled reader so the loader has no YAML dependency.
+
+Week 7 adds `SkillRegistry`: `always: false` skills stay dormant (the agent sees
+only their catalogue entry) until it activates them mid-mission via the `skill`
+tool, keeping long procedures out of the prompt until they are needed.
 """
 
 from __future__ import annotations
@@ -99,7 +103,7 @@ def skills_to_prompt(skills: list[SkillInfo], always_only: bool = False) -> str:
     """Concatenate skill bodies into a system-prompt section.
 
     With `always_only=True`, only skills whose frontmatter has `always: true`
-    are included (the rest are opt-in, to be activated on demand later).
+    are included; the rest are opt-in, activated on demand via `SkillRegistry`.
     """
     sections = [
         f"## Skill: {skill.name}\n\n{skill.content}"
@@ -107,3 +111,67 @@ def skills_to_prompt(skills: list[SkillInfo], always_only: bool = False) -> str:
         if not (always_only and not skill.always)
     ]
     return "\n\n---\n\n".join(sections)
+
+
+class SkillRegistry:
+    """On-demand skill activation (Week 7).
+
+    `always: true` skills go into the system prompt up front (Week 6). Everything
+    else stays *dormant*: the agent sees only a one-line catalogue entry, and
+    pulls the full Markdown body into the conversation by activating the skill.
+    That keeps long procedural skills (the pick-and-place recipe, say) out of the
+    context window until the mission actually calls for them — the same idea as
+    the `ToolRegistry`'s LRU lifecycle, applied to knowledge instead of tools.
+    """
+
+    def __init__(self, skills: list[SkillInfo] | None = None):
+        self._skills: dict[str, SkillInfo] = {}
+        self._active: list[str] = []  # activation order, for reproducible prompts
+        for skill in skills or []:
+            self.add(skill)
+
+    def add(self, skill: SkillInfo) -> None:
+        """Register a skill; `always: true` skills start out already active."""
+        self._skills[skill.name] = skill
+        if skill.always and skill.name not in self._active:
+            self._active.append(skill.name)
+
+    def names(self) -> list[str]:
+        return list(self._skills.keys())
+
+    def get(self, name: str) -> SkillInfo | None:
+        return self._skills.get(name)
+
+    def active(self) -> list[SkillInfo]:
+        return [self._skills[n] for n in self._active]
+
+    def dormant(self) -> list[SkillInfo]:
+        return [s for n, s in self._skills.items() if n not in self._active]
+
+    def is_active(self, name: str) -> bool:
+        return name in self._active
+
+    def activate(self, name: str) -> SkillInfo:
+        """Activate a dormant skill and return it.
+
+        Raises KeyError (listing what *is* available) for an unknown name so the
+        tool layer can hand the model a recoverable error.
+        """
+        skill = self._skills.get(name)
+        if skill is None:
+            raise KeyError(f"unknown skill '{name}'. Available: {sorted(self._skills)}")
+        if name not in self._active:
+            self._active.append(name)
+        return skill
+
+    def catalogue(self) -> list[dict]:
+        """One entry per skill — what the agent sees before activating anything."""
+        return [
+            {
+                "name": skill.name,
+                "description": skill.description,
+                "version": skill.version,
+                "active": self.is_active(skill.name),
+            }
+            for skill in self._skills.values()
+        ]

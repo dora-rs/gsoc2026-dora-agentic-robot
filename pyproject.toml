@@ -26,3 +26,6 @@ packages = ["simulation", "agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: spawns a real dora dataflow (slow; skipped without the dora CLI)",
+]
