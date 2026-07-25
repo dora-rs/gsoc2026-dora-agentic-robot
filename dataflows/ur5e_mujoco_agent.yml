@@ -1,0 +1,91 @@
+# Week 8 — Agent driving the REAL MuJoCo simulator (headless), no dora-moveit2.
+#
+# ur5e_agent_loopback.yml (Week 7) proved the dataflow works across real dora
+# processes, but its pipeline_stub teleports the arm. ur5e_agent_demo.yml runs
+# the real sim, but through the full dora-moveit2 planner/IK/executor stack
+# (OMPL + TracIK + toppra), which needs those extra dependencies installed.
+#
+# This dataflow is the middle ground: the same real agent, the same real Week 1
+# MuJoCo node, the same real Week 2 gripper — with a lightweight `sim_executor`
+# in place of the OMPL stack. It is direct joint control, not motion planning,
+# but every motion is executed by real physics: real actuators, real settling,
+# the real qpos layout, real gripper contact.
+#
+#   mission_source -> agent_bridge -> sim_executor -> mujoco_sim (real physics)
+#                                  -> gripper_controller -> mujoco_sim
+#                     mujoco_sim/joint_positions -> agent_bridge (real feedback)
+#
+# One-time asset fetch, then run headless (no display, no API key):
+#   bash scripts/fetch_ur5e_assets.sh
+#   dora run dataflows/ur5e_mujoco_agent.yml --stop-after 90s
+#
+# For a real LLM in the loop instead of the scripted mock:
+#   OCTOS_PROVIDER=openai OPENAI_API_KEY=... dora run dataflows/ur5e_mujoco_agent.yml --stop-after 120s
+
+nodes:
+  # --- Real UR5e + Robotiq MuJoCo simulation (this repo, Week 1). ---
+  - id: mujoco_sim
+    path: ../simulation/mujoco_node.py
+    inputs:
+      tick: dora/timer/millis/10
+      control_input: sim_executor/control_input
+      gripper_ctrl: gripper_controller/gripper_ctrl
+    outputs:
+      - joint_positions
+      - joint_velocities
+      - sensor_data
+    env:
+      MUJOCO_HEADLESS: "1"
+      SIM_SUBSTEPS: "24"   # ~2.4x real time so the mission settles inside --stop-after
+
+  # --- Sim executor: plan_request -> stream joint targets -> settle -> report. ---
+  - id: sim_executor
+    path: ../simulation/sim_executor.py
+    inputs:
+      tick: dora/timer/millis/50
+      plan_request: agent_bridge/plan_request
+      joint_positions: mujoco_sim/joint_positions
+    outputs:
+      - control_input
+      - plan_status
+      - execution_status
+
+  # --- Robotiq 2F-85 gripper controller (this repo, Week 2 — the real node). ---
+  - id: gripper_controller
+    path: ../simulation/gripper_controller.py
+    inputs:
+      gripper_command: agent_bridge/gripper_command
+    outputs:
+      - gripper_ctrl
+      - gripper_status
+
+  # --- Agent bridge: the same node as every other dataflow, unchanged. ---
+  - id: agent_bridge
+    path: ../agent/bridge_node.py
+    inputs:
+      user_command: mission_source/user_command
+      joint_positions: mujoco_sim/joint_positions
+      plan_status: sim_executor/plan_status
+      execution_status: sim_executor/execution_status
+      gripper_status: gripper_controller/gripper_status
+    outputs:
+      - plan_request
+      - ik_request
+      - scene_command
+      - cartesian_trajectory
+      - gripper_command
+      - agent_response
+    env:
+      OCTOS_PROVIDER: mock
+      OCTOS_SKILLS_DIR: ../skills
+
+  # --- Mission source: one natural-language mission, then logs the reply. ---
+  - id: mission_source
+    path: ../simulation/mission_source.py
+    inputs:
+      tick: dora/timer/millis/2000
+      agent_response: agent_bridge/agent_response
+    outputs:
+      - user_command
+    env:
+      MISSION: "Pick up the red ball and place it on the green plate."

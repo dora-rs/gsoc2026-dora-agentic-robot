@@ -11,8 +11,12 @@ DATAFLOWS = Path(__file__).resolve().parents[1] / "dataflows"
 FULL = DATAFLOWS / "ur5e_full_pipeline.yml"
 AGENT = DATAFLOWS / "ur5e_agent_demo.yml"
 LOOPBACK = DATAFLOWS / "ur5e_agent_loopback.yml"
+RECOVERY = DATAFLOWS / "ur5e_agent_recovery.yml"
+MUJOCO_AGENT = DATAFLOWS / "ur5e_mujoco_agent.yml"
 
 LOOPBACK_NODES = {"pipeline_stub", "gripper_controller", "agent_bridge", "mission_source"}
+MUJOCO_AGENT_NODES = {"mujoco_sim", "sim_executor", "gripper_controller",
+                      "agent_bridge", "mission_source"}
 
 PIPELINE_NODES = {
     "mujoco_sim", "planning_scene", "planner", "ik_solver",
@@ -131,6 +135,72 @@ def test_loopback_stub_closes_the_motion_loop():
     assert stub.inputs["plan_request"] == "agent_bridge/plan_request"
     assert {"joint_positions", "plan_status", "execution_status"} <= set(stub.outputs)
     assert nodes["agent_bridge"].inputs["joint_positions"] == "pipeline_stub/joint_positions"
+
+
+# --- Week 8 recovery dataflow --------------------------------------------
+
+def test_recovery_dataflow_has_no_dangling_edges():
+    result = check(str(RECOVERY))
+    assert result.ok, "dangling wires:\n" + "\n".join(result.errors)
+
+
+def test_recovery_is_the_loopback_plus_fault_injection():
+    """Same topology as the loopback; the only change is the injected failures."""
+    assert set(load_nodes(str(RECOVERY))) == LOOPBACK_NODES
+    spec = yaml.safe_load(RECOVERY.read_text())
+    stub = next(n for n in spec["nodes"] if n["id"] == "pipeline_stub")
+    assert int(stub["env"]["FAIL_FIRST_N"]) >= 1, "recovery run must inject a failure"
+
+
+def test_recovery_uses_only_repo_nodes():
+    spec = yaml.safe_load(RECOVERY.read_text())
+    for node in spec["nodes"]:
+        path = node.get("path", "")
+        assert path.startswith("../") and "dora-moveit2" not in path, path
+        assert (DATAFLOWS / path).resolve().is_file(), path
+
+
+# --- Week 8 real-MuJoCo agent dataflow -----------------------------------
+
+def test_mujoco_agent_has_no_dangling_edges():
+    result = check(str(MUJOCO_AGENT))
+    assert result.ok, "dangling wires:\n" + "\n".join(result.errors)
+
+
+def test_mujoco_agent_nodes_present():
+    assert set(load_nodes(str(MUJOCO_AGENT))) == MUJOCO_AGENT_NODES
+
+
+def test_mujoco_agent_drives_the_real_sim_through_the_executor():
+    """The agent commands sim_executor, which drives the real mujoco_sim, whose
+    joint_positions feed back to the agent — a closed loop through real physics."""
+    nodes = load_nodes(str(MUJOCO_AGENT))
+    assert nodes["sim_executor"].inputs["plan_request"] == "agent_bridge/plan_request"
+    assert nodes["mujoco_sim"].inputs["control_input"] == "sim_executor/control_input"
+    assert nodes["sim_executor"].inputs["joint_positions"] == "mujoco_sim/joint_positions"
+    assert nodes["agent_bridge"].inputs["joint_positions"] == "mujoco_sim/joint_positions"
+    assert nodes["agent_bridge"].inputs["plan_status"] == "sim_executor/plan_status"
+    # Grasping still goes through the real Week 2 gripper node into the sim.
+    assert nodes["mujoco_sim"].inputs["gripper_ctrl"] == "gripper_controller/gripper_ctrl"
+
+
+def test_mujoco_agent_uses_the_real_sim_not_the_stub():
+    spec = yaml.safe_load(MUJOCO_AGENT.read_text())
+    paths = {n["id"]: n.get("path", "") for n in spec["nodes"]}
+    assert paths["mujoco_sim"].endswith("mujoco_node.py")
+    assert "pipeline_stub" not in paths  # this dataflow is real physics
+    for path in paths.values():
+        assert "dora-moveit2" not in path, path
+        assert (DATAFLOWS / path).resolve().is_file(), path
+
+
+def test_mujoco_agent_bridge_matches_the_live_dataflow():
+    """The agent side is identical to ur5e_agent_demo.yml — only the motion
+    stack below it differs."""
+    live = load_nodes(str(AGENT))["agent_bridge"]
+    mj = load_nodes(str(MUJOCO_AGENT))["agent_bridge"]
+    assert set(mj.outputs) == set(live.outputs)
+    assert mj.inputs["joint_positions"] == live.inputs["joint_positions"]
 
 
 def test_detects_dangling_edge(tmp_path):

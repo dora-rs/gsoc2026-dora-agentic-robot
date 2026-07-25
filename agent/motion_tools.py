@@ -63,6 +63,13 @@ GRIPPER_ACTIONS = ("open", "close")
 DEFAULT_MOVE_TIMEOUT = 60.0
 DEFAULT_GRIPPER_TIMEOUT = 15.0
 
+# RRT-Connect is a randomised planner: a failed plan_status is often just an
+# unlucky sample rather than a truly unreachable goal, and replanning from the
+# same start frequently succeeds. dora_move therefore retries transient planning
+# failures transparently, up to this many attempts, before handing the error
+# back to the agent to solve at the task level (a different approach pose).
+DEFAULT_MOVE_ATTEMPTS = 3
+
 
 def _err(message: str) -> ToolResult:
     """A failed ToolResult the agent can read and recover from."""
@@ -84,8 +91,11 @@ class DoraMoveTool(Tool):
             "complete. `target` is either a named pose (" +
             ", ".join(sorted(NAMED_POSES)) +
             f") or a list of {NUM_JOINTS} joint angles in radians. The start "
-            "configuration is read from the current joint_positions. Returns the "
-            "plan status and, when the executor reports back, the execution status."
+            "configuration is read from the current joint_positions. A transient "
+            "planning failure is retried automatically; only a persistent failure "
+            "is returned as an error — recover from that by choosing a different "
+            "approach pose. Returns the plan status, the number of attempts, and "
+            "the execution status once the executor reports back."
         )
 
     def input_schema(self) -> dict:
@@ -100,6 +110,11 @@ class DoraMoveTool(Tool):
                     ],
                 },
                 "timeout_secs": {"type": "number"},
+                "max_attempts": {
+                    "type": "integer",
+                    "description": "How many times to replan a failed plan before "
+                                   f"giving up (default {DEFAULT_MOVE_ATTEMPTS}).",
+                },
             },
             "required": ["target"],
         }
@@ -113,27 +128,40 @@ class DoraMoveTool(Tool):
             return _err(goal)
 
         timeout = float(args.get("timeout_secs", DEFAULT_MOVE_TIMEOUT))
-        self._bridge.drain()
-        start = self._bridge.cache.get("joint_positions")
-        if start is None:
-            return _err("no joint_positions cached yet — call dora_perceive first")
+        max_attempts = max(1, int(args.get("max_attempts", DEFAULT_MOVE_ATTEMPTS)))
 
-        request = {"start": list(start[0]), "goal": goal}
-        self._bridge.send_json("plan_request", request)
-        plan = self._bridge.wait_for_input("plan_status", timeout)
-        if plan is None:
-            return _err(f"timed out after {timeout}s waiting for plan_status")
-        if isinstance(plan, dict) and plan.get("success") is False:
-            return _err(f"planning failed: {plan.get('message', plan)}")
+        last_error = "planning failed"
+        for attempt in range(1, max_attempts + 1):
+            # Re-read the start each attempt: the arm may have settled or moved,
+            # and the planner must plan from wherever it actually is now.
+            self._bridge.drain()
+            start = self._bridge.cache.get("joint_positions")
+            if start is None:
+                return _err("no joint_positions cached yet — call dora_perceive first")
 
-        # The trajectory goes planner -> executor directly; the executor reports
-        # completion on execution_status. A pipeline without an executor still
-        # counts as a successful plan, so a missing status is not an error.
-        execution = self._bridge.wait_for_input("execution_status", timeout)
-        return ToolResult(output=json.dumps(
-            {"goal": goal, "plan_status": plan, "execution_status": execution},
-            default=str,
-        ))
+            request = {"start": list(start[0]), "goal": goal}
+            self._bridge.send_json("plan_request", request)
+            plan = self._bridge.wait_for_input("plan_status", timeout)
+
+            if plan is None:
+                last_error = f"timed out after {timeout}s waiting for plan_status"
+                continue
+            if isinstance(plan, dict) and plan.get("success") is False:
+                last_error = f"planning failed: {plan.get('message', plan)}"
+                continue
+
+            # Planned. The trajectory goes planner -> executor directly; the
+            # executor reports completion on execution_status. A pipeline without
+            # an executor still counts as a successful plan, so a missing status
+            # is not an error.
+            execution = self._bridge.wait_for_input("execution_status", timeout)
+            return ToolResult(output=json.dumps(
+                {"goal": goal, "attempts": attempt,
+                 "plan_status": plan, "execution_status": execution},
+                default=str,
+            ))
+
+        return _err(f"{last_error} (gave up after {max_attempts} attempts)")
 
     def _resolve_target(self, target) -> list[float] | str:
         """Return the goal joint vector, or an error message string."""

@@ -128,6 +128,62 @@ def test_move_times_out_cleanly_when_pipeline_is_silent():
     assert "timed out" in _payload(result)["error"]
 
 
+# --- dora_move replanning / recovery (Week 8) -----------------------------
+
+class FlakyNode(FakeNode):
+    """Rejects the first `fail_n` plan_requests, then plans successfully.
+
+    Models a randomised planner (RRT-Connect): the same start/goal that fails on
+    an unlucky sample succeeds on a later attempt.
+    """
+
+    def __init__(self, fail_n):
+        super().__init__()
+        self._fail_n = fail_n
+        self._seen = 0
+
+    def send_output(self, output_id, array, metadata=None):
+        self.sent.append((output_id, array))
+        if output_id == "plan_request":
+            self._seen += 1
+            ok = self._seen > self._fail_n
+            self.push_input("plan_status", _json_value(
+                {"success": ok, "message": "planned" if ok else "unlucky sample"}))
+            if ok:
+                self.push_input("execution_status", _json_value({"status": "completed"}))
+
+
+def _plan_requests(node):
+    return [s for s in node.sent if s[0] == "plan_request"]
+
+
+def test_move_replans_a_transient_failure_and_reports_attempts():
+    node = FlakyNode(fail_n=2)  # fails twice, succeeds on the third try
+    result = DoraMoveTool(_bridge(node)).execute({"target": "above_ball"})
+    assert result.success
+    assert _payload(result)["attempts"] == 3
+    assert len(_plan_requests(node)) == 3
+
+
+def test_move_succeeds_first_try_reports_one_attempt():
+    result = DoraMoveTool(_bridge()).execute({"target": "home"})
+    assert _payload(result)["attempts"] == 1
+
+
+def test_move_gives_up_after_max_attempts_on_persistent_failure():
+    node = FakeNode(plan_ok=False)
+    result = DoraMoveTool(_bridge(node)).execute({"target": "home", "max_attempts": 2})
+    assert not result.success
+    assert "gave up after 2 attempts" in _payload(result)["error"]
+    assert len(_plan_requests(node)) == 2  # exactly max_attempts plans, no more
+
+
+def test_move_default_retry_budget_is_three():
+    node = FakeNode(plan_ok=False)
+    DoraMoveTool(_bridge(node)).execute({"target": "home"})
+    assert len(_plan_requests(node)) == 3  # DEFAULT_MOVE_ATTEMPTS
+
+
 # --- dora_gripper ---------------------------------------------------------
 
 def test_gripper_close_sends_command_and_waits():

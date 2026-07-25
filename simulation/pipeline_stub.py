@@ -25,6 +25,13 @@ Outputs:
   - joint_positions  : float64[13], full qpos (7 free-joint + 6 arm), like mujoco_sim
   - plan_status      : JSON {"success": bool, "message": str}
   - execution_status : JSON {"status": "completed", "joint_positions": [6]}
+
+Environment:
+  - START_POSE    : named pose to start the arm at (default "home")
+  - FAIL_FIRST_N  : reject the first N plan_requests with a failed plan_status
+                    without moving the arm, then plan normally. Models a flaky
+                    planner (Week 8) so `dora_move`'s replanning can be exercised
+                    across real dora process boundaries. Default 0 (never fail).
 """
 
 from __future__ import annotations
@@ -68,7 +75,9 @@ def main() -> None:
     node = Node()
     start_pose = os.environ.get("START_POSE", "home")
     arm = list(NAMED_POSES.get(start_pose, NAMED_POSES["home"]))
+    fail_first_n = _int_env("FAIL_FIRST_N", 0)
     completed = 0
+    injected = 0  # planning failures injected so far
 
     for event in node:
         if event["type"] == "STOP":
@@ -96,6 +105,17 @@ def main() -> None:
                 "success": False, "message": f"unplannable goal: {request!r}"}))
             continue
 
+        # Injected transient failure: reject without moving, so `dora_move` has to
+        # replan. The arm stays put, so a later successful attempt still lands it
+        # correctly — exactly the recovery path we want to test end to end.
+        if injected < fail_first_n:
+            injected += 1
+            node.send_output("plan_status", _json({
+                "success": False,
+                "message": f"planner failed (injected {injected}/{fail_first_n})"}))
+            print(f"[pipeline_stub] REJECTED plan (injected {injected}/{fail_first_n})")
+            continue
+
         # Plan accepted -> execute instantly -> publish the resulting state.
         arm = goal
         completed += 1
@@ -105,6 +125,14 @@ def main() -> None:
         node.send_output("execution_status", _json({
             "status": "completed", "joint_positions": arm, "motions": completed}))
         print(f"[pipeline_stub] motion {completed} -> {[round(v, 3) for v in arm]}")
+
+
+def _int_env(name: str, default: int) -> int:
+    """Read a non-negative integer env var, falling back on anything unparseable."""
+    try:
+        return max(0, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def _json(obj) -> pa.Array:

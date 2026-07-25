@@ -1,7 +1,7 @@
 ---
 name: pick-and-place
 description: Full procedure for picking up the red ball and placing it on the green plate
-version: 1.0.0
+version: 1.1.0
 author: 23garyd
 always: false
 ---
@@ -35,8 +35,15 @@ an object. It assumes the `dora_move`, `dora_gripper`, and `dora_perceive` tools
 - **Never skip the approach poses.** Going straight to `grasp_ball` or
   `place_plate` from an arbitrary configuration plans a path through the table.
 - **Gripper before motion, not during.** Open/close while the arm is stationary.
-- **On error**, call `dora_perceive` to see where the arm actually is, then
-  resume from the matching step. Do not repeat an identical failing call.
+- **Transient planning failures are handled for you.** `dora_move` replans a
+  failed plan automatically before it returns — the planner is randomised, so a
+  single failure is usually just an unlucky sample. Do not retry a `dora_move`
+  that succeeded.
+- **On a returned error** (a failure `dora_move` could *not* recover from), call
+  `dora_perceive` to see where the arm actually is, then recover at the task
+  level: approach from a different pose rather than repeating the identical call
+  that just failed. A persistent failure means the goal is unreachable from here,
+  not that it needs one more try.
 
 ## Reverse (place → pick)
 

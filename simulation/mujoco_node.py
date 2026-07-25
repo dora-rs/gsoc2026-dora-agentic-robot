@@ -15,6 +15,10 @@ Outputs:
 Environment:
   - MODEL_NAME      : path to a MuJoCo .xml (default: models/ur5e_scene.xml next to this file)
   - MUJOCO_HEADLESS : "1"/"true" to run without the viewer (CI / no display)
+  - SIM_SUBSTEPS    : physics steps per received event (default 1). Raise it to
+                      advance sim time faster than the dora tick rate so a full
+                      agent-driven motion sequence settles in bounded wall-clock
+                      time on a headless run; the viewer path keeps 1 for smoothness.
 """
 
 from __future__ import annotations
@@ -104,7 +108,7 @@ def _publish(node: Node, sim: UR5eSimulator) -> None:
         node.send_output("sensor_data", pa.array(s["sensordata"]), meta)
 
 
-def _run(node: Node, sim: UR5eSimulator, viewer=None) -> None:
+def _run(node: Node, sim: UR5eSimulator, viewer=None, substeps: int = 1) -> None:
     for event in node:
         if event["type"] == "INPUT":
             if event["id"] == "control_input":
@@ -112,7 +116,8 @@ def _run(node: Node, sim: UR5eSimulator, viewer=None) -> None:
             elif event["id"] == "gripper_ctrl":
                 sim.apply_gripper_control(event["value"].to_numpy())
 
-            sim.step()
+            for _ in range(substeps):
+                sim.step()
             if viewer is not None:
                 viewer.sync()
             _publish(node, sim)
@@ -123,10 +128,15 @@ def main() -> None:
     sim = UR5eSimulator()
     print("[sim] UR5e MuJoCo node started")
 
+    try:
+        substeps = max(1, int(os.getenv("SIM_SUBSTEPS", "1")))
+    except ValueError:
+        substeps = 1
+
     headless = os.getenv("MUJOCO_HEADLESS", "").lower() in ("1", "true", "yes")
     if headless:
-        print("[sim] headless mode (no viewer)")
-        _run(node, sim)
+        print(f"[sim] headless mode (no viewer), substeps={substeps}")
+        _run(node, sim, substeps=substeps)
         return
 
     import mujoco.viewer
@@ -134,11 +144,11 @@ def main() -> None:
     try:
         with mujoco.viewer.launch_passive(sim.model, sim.data) as viewer:
             print("[sim] viewer launched")
-            _run(node, sim, viewer)
+            _run(node, sim, viewer)  # viewer path stays real-time (substeps=1)
     except RuntimeError as exc:
         # macOS requires mjpython for the interactive viewer; fall back gracefully.
         print(f"[sim] viewer unavailable ({exc}); falling back to headless")
-        _run(node, sim)
+        _run(node, sim, substeps=substeps)
 
 
 if __name__ == "__main__":

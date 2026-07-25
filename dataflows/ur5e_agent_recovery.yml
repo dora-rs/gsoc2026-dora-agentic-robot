@@ -1,0 +1,66 @@
+# Week 8 — Recovery dataflow: prove dora_move replans a failed plan, for real.
+#
+# Identical to ur5e_agent_loopback.yml, except the pipeline_stub is told to
+# REJECT the first two plan_requests (FAIL_FIRST_N=2). The very first motion of
+# the pick-and-place therefore fails to plan twice before succeeding — so the
+# mission only completes if `dora_move` transparently replans across real dora
+# process boundaries. A build without the retry loop stalls here at the first
+# move; this dataflow is how tests/test_integration_recovery.py catches that.
+#
+# Run (no dora-moveit2, no MuJoCo, no API key, no display):
+#   dora run dataflows/ur5e_agent_recovery.yml --stop-after 30s
+
+nodes:
+  # --- Motion stack stand-in with an injected flaky planner. ---
+  - id: pipeline_stub
+    path: ../simulation/pipeline_stub.py
+    inputs:
+      tick: dora/timer/millis/500
+      plan_request: agent_bridge/plan_request
+    outputs:
+      - joint_positions
+      - plan_status
+      - execution_status
+    env:
+      START_POSE: home
+      FAIL_FIRST_N: "2"
+
+  # --- Robotiq 2F-85 gripper controller (this repo, Week 2 — the real node). ---
+  - id: gripper_controller
+    path: ../simulation/gripper_controller.py
+    inputs:
+      gripper_command: agent_bridge/gripper_command
+    outputs:
+      - gripper_ctrl
+      - gripper_status
+
+  # --- Agent bridge: the same node as the live dataflow, unchanged. ---
+  - id: agent_bridge
+    path: ../agent/bridge_node.py
+    inputs:
+      user_command: mission_source/user_command
+      joint_positions: pipeline_stub/joint_positions
+      plan_status: pipeline_stub/plan_status
+      execution_status: pipeline_stub/execution_status
+      gripper_status: gripper_controller/gripper_status
+    outputs:
+      - plan_request
+      - ik_request
+      - scene_command
+      - cartesian_trajectory
+      - gripper_command
+      - agent_response
+    env:
+      OCTOS_PROVIDER: mock
+      OCTOS_SKILLS_DIR: ../skills
+
+  # --- Mission source: one natural-language mission, then logs the reply. ---
+  - id: mission_source
+    path: ../simulation/mission_source.py
+    inputs:
+      tick: dora/timer/millis/2000
+      agent_response: agent_bridge/agent_response
+    outputs:
+      - user_command
+    env:
+      MISSION: "Pick up the red ball and place it on the green plate."

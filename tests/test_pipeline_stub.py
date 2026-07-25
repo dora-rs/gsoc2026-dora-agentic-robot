@@ -6,7 +6,7 @@ mismatch with `mujoco_sim` would hide.
 """
 
 from simulation.named_poses import NAMED_POSES
-from simulation.pipeline_stub import FREE_JOINT_QPOS, full_qpos, parse_goal
+from simulation.pipeline_stub import FREE_JOINT_QPOS, _int_env, full_qpos, parse_goal
 
 HOME = list(NAMED_POSES["home"])
 
@@ -33,3 +33,15 @@ def test_parse_goal_rejects_bad_input():
     assert parse_goal({"goal": "nowhere"}) is None
     assert parse_goal({"goal": [1, 2]}) is None
     assert parse_goal({"goal": ["a"] * 6}) is None
+
+
+def test_int_env_reads_and_defaults(monkeypatch):
+    """FAIL_FIRST_N parsing (Week 8): valid ints pass, junk falls back, no negatives."""
+    monkeypatch.setenv("FAIL_FIRST_N", "3")
+    assert _int_env("FAIL_FIRST_N", 0) == 3
+    monkeypatch.setenv("FAIL_FIRST_N", "-5")
+    assert _int_env("FAIL_FIRST_N", 0) == 0  # clamped to non-negative
+    monkeypatch.setenv("FAIL_FIRST_N", "nope")
+    assert _int_env("FAIL_FIRST_N", 7) == 7  # unparseable -> default
+    monkeypatch.delenv("FAIL_FIRST_N", raising=False)
+    assert _int_env("FAIL_FIRST_N", 0) == 0  # unset -> default
