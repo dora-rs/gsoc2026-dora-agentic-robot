@@ -134,6 +134,40 @@ class MockProvider(LlmProvider):
         }
 
 
+class ReactiveMockProvider(LlmProvider):
+    """A mock that *reacts* to the conversation instead of replaying a fixed script.
+
+    `MockProvider` scripts a fixed tool sequence, which cannot model an agent that
+    changes course based on a tool result — the thing that matters for recovery.
+    This provider calls `decide(messages)` on every turn, so a test can express
+    real branching (e.g. "if the last dora_move returned an error, re-perceive and
+    approach from a different pose") deterministically, with no API key. It is the
+    CI stand-in for the judgement a live LLM applies in `live_pick_place_demo`.
+    """
+
+    def __init__(self, decide, name: str = "reactive-mock"):
+        self._decide = decide
+        self._name = name
+        self._calls = 0
+
+    def name(self) -> str:
+        return self._name
+
+    def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        config: ChatConfig,
+    ) -> ChatResponse:
+        self._calls += 1
+        response = self._decide(messages)
+        return response or ChatResponse(content="(reactive-mock: no decision)",
+                                        finish_reason="stop")
+
+    def export_metrics(self) -> dict:
+        return {"provider": self._name, "calls": self._calls}
+
+
 class OpenAIProvider(LlmProvider):
     """Real OpenAI chat-completions provider (GPT-4o by default).
 

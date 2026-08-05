@@ -11,6 +11,9 @@ Later phases extend this package (all interfaces here are forward-compatible):
   - Week 7 — motion/introspection tools + on-demand skill activation
   - Week 8 — dora_move replanning/recovery + the agent driving the real MuJoCo
     simulator (see `agent.motion_tools`, `simulation.sim_executor`)
+  - Week 9 — a live LLM completes the task: dormant-skill catalogue in the
+    prompt, self-healing sensor reads, and `ReactiveMockProvider` for
+    deterministic recovery tests (see `agent.live_pick_place_demo`)
 
 The `SKILL.md` loader and `SkillRegistry` are exported here (pure Python). The
 dora bridge and its tools live in the `agent.bridge` / `agent.motion_tools` /
@@ -26,6 +29,7 @@ from .provider import (
     ChatConfig,
     ChatResponse,
     MockProvider,
+    ReactiveMockProvider,
     OpenAIProvider,
 )
 from .failover import RetryProvider, ProviderChain, AdaptiveRouter
@@ -49,6 +53,7 @@ __all__ = [
     "ChatConfig",
     "ChatResponse",
     "MockProvider",
+    "ReactiveMockProvider",
     "OpenAIProvider",
     "RetryProvider",
     "ProviderChain",

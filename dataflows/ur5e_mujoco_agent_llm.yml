@@ -1,0 +1,85 @@
+# Week 9 — A live LLM (GPT-4o) driving the pick-and-place on the real MuJoCo sim.
+#
+# Identical to ur5e_mujoco_agent.yml except the agent runs a real OpenAI model
+# instead of the scripted mock: the LLM discovers and activates the pick-and-place
+# skill, perceives, and issues each dora_move / dora_gripper itself. This removes
+# the biggest mock from the loop — the token stream is now a real model reacting
+# to real tool results and real joint feedback from the simulator.
+#
+# Non-deterministic and needs an API key, so it is NOT part of CI; it is the
+# live demo. Export your key first (it is read from the environment, never
+# committed here):
+#
+#   export OPENAI_API_KEY=sk-...
+#   bash scripts/fetch_ur5e_assets.sh                      # one-time meshes
+#   dora run dataflows/ur5e_mujoco_agent_llm.yml --stop-after 120s
+#
+# OCTOS_MODEL overrides the model (default gpt-4o).
+
+nodes:
+  # --- Real UR5e + Robotiq MuJoCo simulation (this repo, Week 1). ---
+  - id: mujoco_sim
+    path: ../simulation/mujoco_node.py
+    inputs:
+      tick: dora/timer/millis/10
+      control_input: sim_executor/control_input
+      gripper_ctrl: gripper_controller/gripper_ctrl
+    outputs:
+      - joint_positions
+      - joint_velocities
+      - sensor_data
+    env:
+      MUJOCO_HEADLESS: "1"
+      SIM_SUBSTEPS: "24"
+
+  # --- Sim executor: plan_request -> stream joint targets -> settle -> report. ---
+  - id: sim_executor
+    path: ../simulation/sim_executor.py
+    inputs:
+      tick: dora/timer/millis/50
+      plan_request: agent_bridge/plan_request
+      joint_positions: mujoco_sim/joint_positions
+    outputs:
+      - control_input
+      - plan_status
+      - execution_status
+
+  # --- Robotiq 2F-85 gripper controller (this repo, Week 2 — the real node). ---
+  - id: gripper_controller
+    path: ../simulation/gripper_controller.py
+    inputs:
+      gripper_command: agent_bridge/gripper_command
+    outputs:
+      - gripper_ctrl
+      - gripper_status
+
+  # --- Agent bridge, running a REAL LLM (OCTOS_PROVIDER=openai). ---
+  - id: agent_bridge
+    path: ../agent/bridge_node.py
+    inputs:
+      user_command: mission_source/user_command
+      joint_positions: mujoco_sim/joint_positions
+      plan_status: sim_executor/plan_status
+      execution_status: sim_executor/execution_status
+      gripper_status: gripper_controller/gripper_status
+    outputs:
+      - plan_request
+      - ik_request
+      - scene_command
+      - cartesian_trajectory
+      - gripper_command
+      - agent_response
+    env:
+      OCTOS_PROVIDER: openai
+      OCTOS_SKILLS_DIR: ../skills
+
+  # --- Mission source: one natural-language mission, then logs the reply. ---
+  - id: mission_source
+    path: ../simulation/mission_source.py
+    inputs:
+      tick: dora/timer/millis/2000
+      agent_response: agent_bridge/agent_response
+    outputs:
+      - user_command
+    env:
+      MISSION: "Pick up the red ball and place it on the green plate."

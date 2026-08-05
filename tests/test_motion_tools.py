@@ -112,7 +112,7 @@ def test_move_rejects_wrong_joint_count():
 def test_move_without_joint_state_is_a_clean_error():
     result = DoraMoveTool(_bridge(seeded=False)).execute({"target": "home"})
     assert not result.success
-    assert "no joint_positions" in _payload(result)["error"]
+    assert "joint_positions" in _payload(result)["error"]
 
 
 def test_move_surfaces_planning_failure():
@@ -182,6 +182,29 @@ def test_move_default_retry_budget_is_three():
     node = FakeNode(plan_ok=False)
     DoraMoveTool(_bridge(node)).execute({"target": "home"})
     assert len(_plan_requests(node)) == 3  # DEFAULT_MOVE_ATTEMPTS
+
+
+# --- self-healing sensor reads (Week 9) -----------------------------------
+
+def test_move_self_heals_joint_state_from_an_undrained_queue():
+    """joint_positions queued but never drained: the tool actively waits for it
+    instead of failing, so a first move works without a prior perceive/gripper."""
+    node = FakeNode()
+    node.push_input("joint_positions", pa.array([0.0] * 7 + HOME))  # queued, not cached
+    bridge = DoraAgentBridge(node, poll_secs=0.0)  # drain() is a no-op here
+    result = DoraMoveTool(bridge).execute({"target": "above_ball"})
+    assert result.success
+    request = json.loads(bytes(node.sent[0][1].to_pylist()).decode("utf-8"))
+    assert request["start"] == HOME  # recovered the start from the waiting queue
+
+
+def test_perceive_self_heals_joint_state_from_an_undrained_queue():
+    node = FakeNode()
+    node.push_input("joint_positions", pa.array([0.0] * 7 + HOME))
+    bridge = DoraAgentBridge(node, poll_secs=0.0)
+    snapshot = _payload(DoraPerceiveTool(bridge).execute({}))
+    assert snapshot["joint_positions"] == HOME
+    assert snapshot["nearest_named_pose"] == "home"
 
 
 # --- dora_gripper ---------------------------------------------------------

@@ -52,7 +52,12 @@ BASE_SYSTEM_PROMPT = (
     "2F-85 gripper in MuJoCo simulation, driving a dora motion-planning pipeline. "
     "Call dora_perceive before planning, move the arm with dora_move (one motion "
     "at a time — it returns when the motion is done), and drive the gripper with "
-    "dora_gripper. For any multi-step task, activate the matching skill first."
+    "dora_gripper. Before a multi-step task, activate the matching procedure from "
+    "the 'Skill procedures available on demand' list below with skill(activate, "
+    "<name>) and follow it step by step. If a dora_move returns an error it could "
+    "not recover from, call dora_perceive to see where the arm is, then approach "
+    "from a different pose rather than repeating the same failing call. When the "
+    "task is done, reply with a short confirmation and stop."
 )
 
 

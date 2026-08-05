@@ -13,6 +13,7 @@ AGENT = DATAFLOWS / "ur5e_agent_demo.yml"
 LOOPBACK = DATAFLOWS / "ur5e_agent_loopback.yml"
 RECOVERY = DATAFLOWS / "ur5e_agent_recovery.yml"
 MUJOCO_AGENT = DATAFLOWS / "ur5e_mujoco_agent.yml"
+MUJOCO_AGENT_LLM = DATAFLOWS / "ur5e_mujoco_agent_llm.yml"
 
 LOOPBACK_NODES = {"pipeline_stub", "gripper_controller", "agent_bridge", "mission_source"}
 MUJOCO_AGENT_NODES = {"mujoco_sim", "sim_executor", "gripper_controller",
@@ -201,6 +202,32 @@ def test_mujoco_agent_bridge_matches_the_live_dataflow():
     mj = load_nodes(str(MUJOCO_AGENT))["agent_bridge"]
     assert set(mj.outputs) == set(live.outputs)
     assert mj.inputs["joint_positions"] == live.inputs["joint_positions"]
+
+
+# --- Week 9 live-LLM dataflow --------------------------------------------
+
+def test_mujoco_agent_llm_has_no_dangling_edges():
+    result = check(str(MUJOCO_AGENT_LLM))
+    assert result.ok, "dangling wires:\n" + "\n".join(result.errors)
+
+
+def test_mujoco_agent_llm_is_the_real_sim_flow_with_a_real_provider():
+    """Same topology as the real-MuJoCo dataflow, but the agent runs a live LLM."""
+    assert set(load_nodes(str(MUJOCO_AGENT_LLM))) == MUJOCO_AGENT_NODES
+    spec = yaml.safe_load(MUJOCO_AGENT_LLM.read_text())
+    bridge = next(n for n in spec["nodes"] if n["id"] == "agent_bridge")
+    assert bridge["env"]["OCTOS_PROVIDER"] == "openai"
+    # A key must never be committed — it is read from the environment.
+    assert not any("API_KEY" in k for k in bridge.get("env", {})), \
+        "do not hardcode an API key in the dataflow"
+
+
+def test_mujoco_agent_llm_uses_only_repo_nodes():
+    spec = yaml.safe_load(MUJOCO_AGENT_LLM.read_text())
+    for node in spec["nodes"]:
+        path = node.get("path", "")
+        assert "dora-moveit2" not in path, path
+        assert (DATAFLOWS / path).resolve().is_file(), path
 
 
 def test_detects_dangling_edge(tmp_path):

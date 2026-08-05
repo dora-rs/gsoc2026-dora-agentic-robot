@@ -70,6 +70,11 @@ DEFAULT_GRIPPER_TIMEOUT = 15.0
 # back to the agent to solve at the task level (a different approach pose).
 DEFAULT_MOVE_ATTEMPTS = 3
 
+# How long a tool will actively wait for a sensor reading (joint_positions)
+# before deciding the simulator is not producing state. Short: the sim
+# republishes on every tick, so a value normally arrives within tens of ms.
+STATE_WAIT_TIMEOUT = 1.0
+
 
 def _err(message: str) -> ToolResult:
     """A failed ToolResult the agent can read and recover from."""
@@ -133,11 +138,12 @@ class DoraMoveTool(Tool):
         last_error = "planning failed"
         for attempt in range(1, max_attempts + 1):
             # Re-read the start each attempt: the arm may have settled or moved,
-            # and the planner must plan from wherever it actually is now.
-            self._bridge.drain()
-            start = self._bridge.cache.get("joint_positions")
+            # and the planner must plan from wherever it actually is now. Actively
+            # wait for a joint reading if none is cached yet, so a first move does
+            # not fail purely because nothing has drained the sensor queue.
+            start = self._bridge.ensure_cached("joint_positions", STATE_WAIT_TIMEOUT)
             if start is None:
-                return _err("no joint_positions cached yet — call dora_perceive first")
+                return _err("no joint_positions available — is the simulator running?")
 
             request = {"start": list(start[0]), "goal": goal}
             self._bridge.send_json("plan_request", request)
@@ -245,7 +251,10 @@ class DoraPerceiveTool(Tool):
         return ["perception", "read"]
 
     def execute(self, args: dict) -> ToolResult:
-        self._bridge.drain()
+        # Actively wait for a joint reading if none is cached yet, so perceive is
+        # reliable as the very first call of a mission (nothing has drained the
+        # sensor queue at that point).
+        self._bridge.ensure_cached("joint_positions", STATE_WAIT_TIMEOUT)
         joints = self._bridge.read_cached("joint_positions")
         snapshot: dict = {
             "joint_positions": joints.get("data"),

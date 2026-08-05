@@ -106,6 +106,21 @@ class DoraAgentBridge:
 
     # --- reads / sends ----------------------------------------------------
 
+    def ensure_cached(self, input_id: str, timeout: float = 2.0):
+        """Return the cached value for `input_id`, actively waiting once if absent.
+
+        `drain()` only caches inputs that happen to be pending, so a tool that
+        needs the current joint state can otherwise miss it purely on timing
+        (nothing else drained the queue yet). This blocks briefly for the next
+        `input_id` when the cache is empty — the sim republishes sensors
+        continuously, so a fresh value normally arrives within a tick or two.
+        Returns the cached entry `(value, ts)` or None if it never arrives.
+        """
+        self.drain()
+        if input_id not in self.cache:
+            self.wait_for_input(input_id, timeout)
+        return self.cache.get(input_id)
+
     def read_cached(self, input_id: str) -> dict:
         """Latest cached value for `input_id` with its age, or an error dict."""
         cached = self.cache.get(input_id)
@@ -275,8 +290,27 @@ def build_bridge_registry(bridge: DoraAgentBridge) -> ToolRegistry:
 
 
 def compose_system_prompt(base_prompt: str, skills: list[SkillInfo]) -> str:
-    """Append the always-on skills to the base system prompt."""
+    """Build the system prompt: base + always-on skill bodies + a dormant catalogue.
+
+    The always-on skills are injected in full. The dormant skills (`always:
+    false`) are advertised by name and description only, so the model knows which
+    procedures exist and can `skill(activate, ...)` the right one before a task —
+    without that catalogue a real LLM guesses, and picks the wrong skill (it can
+    only see the always-on ones otherwise).
+    """
+    parts = [base_prompt]
+
     section = skills_to_prompt(skills, always_only=True)
-    if not section:
-        return base_prompt
-    return f"{base_prompt}\n\n# Skills\n\n{section}"
+    if section:
+        parts.append(f"# Skills\n\n{section}")
+
+    dormant = [s for s in skills if not s.always]
+    if dormant:
+        lines = "\n".join(f"- **{s.name}** — {s.description}" for s in dormant)
+        parts.append(
+            "# Skill procedures available on demand\n\n"
+            "These are not loaded yet. Before a multi-step task, call the `skill` "
+            "tool with action 'activate' and the matching name to read the full "
+            "procedure, then follow it:\n\n" + lines
+        )
+    return "\n\n".join(parts)

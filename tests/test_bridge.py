@@ -157,6 +157,30 @@ def test_compose_system_prompt_no_skills_is_base():
     assert compose_system_prompt("BASE", []) == "BASE"
 
 
+def test_compose_system_prompt_advertises_dormant_skills():
+    """Dormant skills must appear by name+description (not body) so a real LLM
+    can activate the right one instead of guessing (Week 9)."""
+    skills = [
+        SkillInfo("ur5e-arm", "how to move the arm", "1.0", "", True, "arm body", "p1"),
+        SkillInfo("pick-and-place", "pick the ball, place it on the plate",
+                  "1.0", "", False, "the full procedure body", "p2"),
+    ]
+    prompt = compose_system_prompt("BASE", skills)
+    # The dormant skill is discoverable by name + description...
+    assert "pick-and-place" in prompt
+    assert "pick the ball, place it on the plate" in prompt
+    # ...but its full body is still withheld until activation.
+    assert "the full procedure body" not in prompt
+    # ...and the model is told how to load it.
+    assert "activate" in prompt.lower()
+
+
+def test_compose_system_prompt_omits_catalogue_when_all_always_on():
+    skills = [SkillInfo("s1", "d1", "1.0", "", True, "body", "p1")]
+    prompt = compose_system_prompt("BASE", skills)
+    assert "available on demand" not in prompt.lower()
+
+
 # --- end to end through the Agent loop ------------------------------------
 
 def test_agent_drives_bridge_end_to_end():
