@@ -1,0 +1,109 @@
+# Week 10 — A live LLM driving the pick-and-place through the REAL dora-moveit2
+# planner on the real MuJoCo sim.
+#
+# Week 9 got a live GPT-4o completing the task, but through `sim_executor` —
+# direct joint control that snaps straight to each goal, no path search. This
+# dataflow replaces that single node with the genuine motion stack:
+#
+#   agent_bridge -> rrt_planner (real dora-moveit2 RRT-Connect) -> trajectory
+#                -> trajectory_executor (follow the path on real physics) -> sim
+#
+# So the live model's dora_move now triggers real sampling-based planning, and a
+# real multi-waypoint path is executed through MuJoCo dynamics. Task-level
+# recovery (re-perceive, re-approach) now fires against *real* planner outcomes
+# rather than injected failures.
+#
+# The planner is imported from the sibling dora-moveit2 checkout (path-search
+# half only — no OMPL/TracIK/toppra C++ deps). Non-deterministic + needs an API
+# key, so this is the live demo, not CI. The key is read from the environment and
+# never committed here:
+#
+#   export OPENAI_API_KEY=sk-...
+#   bash scripts/fetch_ur5e_assets.sh                        # one-time meshes
+#   dora run dataflows/ur5e_mujoco_planner_llm.yml --stop-after 150s
+#
+# OCTOS_MODEL overrides the model (default gpt-4o). DORA_MOVEIT2_PATH overrides
+# where the dora_moveit package is found (defaults to the sibling checkout).
+
+nodes:
+  # --- Real UR5e + Robotiq MuJoCo simulation (this repo, Week 1). ---
+  - id: mujoco_sim
+    path: ../simulation/mujoco_node.py
+    inputs:
+      tick: dora/timer/millis/10
+      control_input: trajectory_executor/control_input
+      gripper_ctrl: gripper_controller/gripper_ctrl
+    outputs:
+      - joint_positions
+      - joint_velocities
+      - sensor_data
+    env:
+      MUJOCO_HEADLESS: "1"
+      SIM_SUBSTEPS: "24"
+
+  # --- RRT-Connect planner: the real dora-moveit2 path search (this repo node,
+  #     dora-moveit2 algorithm). plan_request -> plan_status + trajectory. ---
+  - id: rrt_planner
+    path: ../simulation/rrt_planner_node.py
+    inputs:
+      plan_request: agent_bridge/plan_request
+    outputs:
+      - plan_status
+      - trajectory
+    env:
+      ROBOT_CONFIG_MODULE: simulation.ur5e_moveit_config
+      PLANNER_TYPE: rrt_connect
+      PLANNER_MAX_TIME: "5.0"
+
+  # --- Trajectory executor: follow the planned path on the real sim, waypoint
+  #     by waypoint, then report execution_status (this repo, Week 10). ---
+  - id: trajectory_executor
+    path: ../simulation/trajectory_executor_node.py
+    inputs:
+      tick: dora/timer/millis/50
+      trajectory: rrt_planner/trajectory
+      joint_positions: mujoco_sim/joint_positions
+    outputs:
+      - control_input
+      - execution_status
+
+  # --- Robotiq 2F-85 gripper controller (this repo, Week 2 — the real node). ---
+  - id: gripper_controller
+    path: ../simulation/gripper_controller.py
+    inputs:
+      gripper_command: agent_bridge/gripper_command
+    outputs:
+      - gripper_ctrl
+      - gripper_status
+
+  # --- Agent bridge, running a REAL LLM (OCTOS_PROVIDER=openai). Reads the
+  #     planner's plan_status and the executor's execution_status. ---
+  - id: agent_bridge
+    path: ../agent/bridge_node.py
+    inputs:
+      user_command: mission_source/user_command
+      joint_positions: mujoco_sim/joint_positions
+      plan_status: rrt_planner/plan_status
+      execution_status: trajectory_executor/execution_status
+      gripper_status: gripper_controller/gripper_status
+    outputs:
+      - plan_request
+      - ik_request
+      - scene_command
+      - cartesian_trajectory
+      - gripper_command
+      - agent_response
+    env:
+      OCTOS_PROVIDER: openai
+      OCTOS_SKILLS_DIR: ../skills
+
+  # --- Mission source: one natural-language mission, then logs the reply. ---
+  - id: mission_source
+    path: ../simulation/mission_source.py
+    inputs:
+      tick: dora/timer/millis/2000
+      agent_response: agent_bridge/agent_response
+    outputs:
+      - user_command
+    env:
+      MISSION: "Pick up the red ball and place it on the green plate."

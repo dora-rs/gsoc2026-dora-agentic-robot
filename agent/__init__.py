@@ -14,6 +14,9 @@ Later phases extend this package (all interfaces here are forward-compatible):
   - Week 9 — a live LLM completes the task: dormant-skill catalogue in the
     prompt, self-healing sensor reads, and `ReactiveMockProvider` for
     deterministic recovery tests (see `agent.live_pick_place_demo`)
+  - Week 10 — dora_move runs the real dora-moveit2 RRT-Connect planner: a live
+    LLM completes the pick-and-place through genuine multi-waypoint path search
+    (see `agent.live_planner_demo`, `simulation.rrt_planner_node`)
 
 The `SKILL.md` loader and `SkillRegistry` are exported here (pure Python). The
 dora bridge and its tools live in the `agent.bridge` / `agent.motion_tools` /

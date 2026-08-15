@@ -14,10 +14,13 @@ LOOPBACK = DATAFLOWS / "ur5e_agent_loopback.yml"
 RECOVERY = DATAFLOWS / "ur5e_agent_recovery.yml"
 MUJOCO_AGENT = DATAFLOWS / "ur5e_mujoco_agent.yml"
 MUJOCO_AGENT_LLM = DATAFLOWS / "ur5e_mujoco_agent_llm.yml"
+MUJOCO_PLANNER_LLM = DATAFLOWS / "ur5e_mujoco_planner_llm.yml"
 
 LOOPBACK_NODES = {"pipeline_stub", "gripper_controller", "agent_bridge", "mission_source"}
 MUJOCO_AGENT_NODES = {"mujoco_sim", "sim_executor", "gripper_controller",
                       "agent_bridge", "mission_source"}
+MUJOCO_PLANNER_NODES = {"mujoco_sim", "rrt_planner", "trajectory_executor",
+                        "gripper_controller", "agent_bridge", "mission_source"}
 
 PIPELINE_NODES = {
     "mujoco_sim", "planning_scene", "planner", "ik_solver",
@@ -228,6 +231,51 @@ def test_mujoco_agent_llm_uses_only_repo_nodes():
         path = node.get("path", "")
         assert "dora-moveit2" not in path, path
         assert (DATAFLOWS / path).resolve().is_file(), path
+
+
+# --- Week 10 real-planner + live-LLM dataflow ----------------------------
+
+def test_mujoco_planner_llm_has_no_dangling_edges():
+    result = check(str(MUJOCO_PLANNER_LLM))
+    assert result.ok, "dangling wires:\n" + "\n".join(result.errors)
+
+
+def test_mujoco_planner_llm_nodes_present():
+    assert set(load_nodes(str(MUJOCO_PLANNER_LLM))) == MUJOCO_PLANNER_NODES
+
+
+def test_planner_and_executor_replace_the_sim_executor():
+    """The single sim_executor is split into a real planner + a path-following
+    executor: agent -> planner -> trajectory -> executor -> real sim, with the
+    planner's plan_status and the executor's execution_status feeding the agent."""
+    nodes = load_nodes(str(MUJOCO_PLANNER_LLM))
+    assert "sim_executor" not in nodes, "the direct-control node is replaced"
+    # agent commands the planner; planner emits a trajectory the executor follows.
+    assert nodes["rrt_planner"].inputs["plan_request"] == "agent_bridge/plan_request"
+    assert nodes["trajectory_executor"].inputs["trajectory"] == "rrt_planner/trajectory"
+    # the executor drives the real sim and reads its joint feedback.
+    assert nodes["mujoco_sim"].inputs["control_input"] == "trajectory_executor/control_input"
+    assert nodes["trajectory_executor"].inputs["joint_positions"] == "mujoco_sim/joint_positions"
+    # status flows back to the agent from the right stage of the new pipeline.
+    assert nodes["agent_bridge"].inputs["plan_status"] == "rrt_planner/plan_status"
+    assert nodes["agent_bridge"].inputs["execution_status"] == "trajectory_executor/execution_status"
+
+
+def test_planner_dataflow_is_repo_local_with_a_real_provider():
+    """The dataflow nodes are all repo files — the dora-moveit2 dependency is an
+    import inside rrt_planner_node, configured by env, not a cross-repo node path.
+    The agent runs a real LLM and no API key is committed."""
+    spec = yaml.safe_load(MUJOCO_PLANNER_LLM.read_text())
+    for node in spec["nodes"]:
+        path = node.get("path", "")
+        assert "dora-moveit2" not in path, path
+        assert (DATAFLOWS / path).resolve().is_file(), path
+    planner = next(n for n in spec["nodes"] if n["id"] == "rrt_planner")
+    assert planner["env"]["ROBOT_CONFIG_MODULE"] == "simulation.ur5e_moveit_config"
+    bridge = next(n for n in spec["nodes"] if n["id"] == "agent_bridge")
+    assert bridge["env"]["OCTOS_PROVIDER"] == "openai"
+    assert not any("API_KEY" in k for k in bridge.get("env", {})), \
+        "do not hardcode an API key in the dataflow"
 
 
 def test_detects_dangling_edge(tmp_path):
