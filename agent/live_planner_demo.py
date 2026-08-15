@@ -58,11 +58,24 @@ class PlannerBackedNode(PickPlaceNode):
 
     def __init__(self, start_pose: str = "home", obstacles=None):
         # Collision-aware: every plan is checked against the table (and any
-        # obstacles) via the MuJoCo-exact UR5e FK — the Week 11 upgrade.
+        # obstacles) via the MuJoCo-exact UR5e FK. The obstacle list is kept live
+        # so a scene_command from the agent updates what the planner avoids
+        # (Week 12).
+        self.obstacles: list = [] if obstacles is None else obstacles
         self._planner, self._PlanRequest, self._PlannerType = \
-            load_collision_planner(obstacles=obstacles)
+            load_collision_planner(obstacles=self.obstacles)
         self.plans: list[int] = []
         super().__init__(start_pose)
+
+    def send_output(self, output_id: str, array, metadata=None) -> None:
+        if output_id == "scene_command":
+            from simulation.rrt_planner_node import apply_scene_command
+            self.sent.append((output_id, array))
+            result = apply_scene_command(self.obstacles, self._decode(array))
+            self._push("scene_result", _json_value(
+                {"result": result, "obstacles": len(self.obstacles)}))
+            return
+        super().send_output(output_id, array, metadata)
 
     def _handle_plan(self, array) -> None:
         goal = self._decode(array).get("goal")
@@ -104,7 +117,16 @@ class PlannerBackedNode(PickPlaceNode):
             "waypoints": status["num_waypoints"]}))
 
 
-def _run(provider, verbose: bool) -> PlannerBackedNode:
+# A box on the arm's initial approach swing (not on any grasp pose), described to
+# the model so it must register it before moving. World-frame, metres.
+OBSTACLE_MISSION = (
+    "There is a box obstacle, 16 cm on a side, centred at world position "
+    "[-0.4, -0.27, 0.5]. Register it as an obstacle to avoid, then pick up the "
+    "red ball and place it on the green plate."
+)
+
+
+def _run(provider, verbose: bool, mission: str = MISSION) -> PlannerBackedNode:
     node = PlannerBackedNode()
     bridge = DoraAgentBridge(node, poll_secs=0.0)
 
@@ -116,13 +138,14 @@ def _run(provider, verbose: bool) -> PlannerBackedNode:
     agent = Agent(provider, registry,
                   AgentConfig(max_iterations=30, tool_timeout_secs=30.0),
                   system_prompt=system_prompt)
-    final = agent.process_message(MISSION, verbose=verbose)
+    final = agent.process_message(mission, verbose=verbose)
 
     if verbose:
         print(f"\nFinal response: {final}")
         print("Pipeline log:")
         for line in node.log:
             print(f"  {line}")
+        print(f"Obstacles registered: {[o['name'] for o in node.obstacles]}")
         print(f"Plans (waypoints each): {node.plans}")
         print(f"Ball position: {[round(v, 3) for v in node.ball_position]}")
     return node
@@ -133,20 +156,25 @@ def run_scripted(verbose: bool = True) -> PlannerBackedNode:
     return _run(MockProvider(_script()), verbose)
 
 
-def run_live(model: str | None = None, verbose: bool = True) -> PlannerBackedNode:
+def run_live(model: str | None = None, verbose: bool = True,
+             mission: str = MISSION) -> PlannerBackedNode:
     """A real LLM driving the mission through the real planner."""
     provider = OpenAIProvider(model=model or os.environ.get("OCTOS_MODEL", "gpt-4o"))
-    return _run(provider, verbose)
+    return _run(provider, verbose, mission)
 
 
 def main() -> None:
     use_mock = "--mock" in sys.argv
+    with_obstacle = "--obstacle" in sys.argv
     if not use_mock and not os.environ.get("OPENAI_API_KEY"):
         print("OPENAI_API_KEY is not set — run with --mock for the scripted proof.",
               file=sys.stderr)
         sys.exit(2)
 
-    node = run_scripted() if use_mock else run_live()
+    if use_mock:
+        node = run_scripted()
+    else:
+        node = run_live(mission=OBSTACLE_MISSION if with_obstacle else MISSION)
     planned = node.plans and all(n >= 2 for n in node.plans)
     if node.ball_on_plate() and planned:
         print(f"\n✅ Pick-and-place completed through the real planner "

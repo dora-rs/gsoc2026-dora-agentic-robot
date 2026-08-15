@@ -56,8 +56,10 @@ BASE_SYSTEM_PROMPT = (
     "the 'Skill procedures available on demand' list below with skill(activate, "
     "<name>) and follow it step by step. If a dora_move returns an error it could "
     "not recover from, call dora_perceive to see where the arm is, then approach "
-    "from a different pose rather than repeating the same failing call. When the "
-    "task is done, reply with a short confirmation and stop."
+    "from a different pose rather than repeating the same failing call. If you are "
+    "told about an obstacle to avoid, register it with dora_obstacle(add, ...) "
+    "before moving near it — the planner then routes every motion around it. When "
+    "the task is done, reply with a short confirmation and stop."
 )
 
 

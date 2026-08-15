@@ -63,6 +63,35 @@ def make_cylinder(name: str, position, radius: float, height: float) -> dict:
             "radius": float(radius), "height": float(height)}
 
 
+def obstacle_from_spec(spec: dict) -> dict:
+    """Build an internal obstacle dict from a scene object spec (add-message).
+
+    Accepts `{"name", "type", "position", ...}` where the size fields depend on
+    the type: box -> `half_extents` (or `dimensions`, treated as full sizes),
+    sphere -> `radius`, cylinder -> `radius` + `height`. Raises ValueError on an
+    unknown or malformed spec so the caller can reject it cleanly.
+    """
+    name = str(spec.get("name", "obstacle"))
+    kind = str(spec.get("type", "")).lower()
+    position = spec.get("position")
+    if not isinstance(position, (list, tuple)) or len(position) != 3:
+        raise ValueError(f"obstacle {name!r} needs a 3-element position")
+
+    if kind == "box":
+        half = spec.get("half_extents")
+        if half is None and "dimensions" in spec:
+            half = [d / 2.0 for d in spec["dimensions"]]
+        if not isinstance(half, (list, tuple)) or len(half) != 3:
+            raise ValueError(f"box {name!r} needs half_extents (3)")
+        return make_box(name, position, half)
+    if kind == "sphere":
+        return make_sphere(name, position, float(spec["radius"]))
+    if kind == "cylinder":
+        return make_cylinder(name, position, float(spec["radius"]),
+                             float(spec["height"]))
+    raise ValueError(f"unknown obstacle type {kind!r}")
+
+
 # --- primitive sphere tests ----------------------------------------------
 
 def _sphere_box_hit(c, r, box_pos, half, margin) -> bool:
@@ -99,21 +128,49 @@ def _sphere_hits_obstacle(c, r, obs, margin) -> bool:
 
 # --- arm model + state validity ------------------------------------------
 
-def arm_spheres(joint_angles, samples_per_segment: int = 4):
-    """Spheres swept along the arm's link segments: list of (center, radius)."""
+# Only test self-collision between link segments at least this far apart in the
+# kinematic chain — nearer segments share an endpoint and overlap by design, so
+# checking them would false-positive on every pose. 3 flags only a genuine
+# doubling-back of the wrist onto the shoulder/upper arm.
+SELF_MIN_SEPARATION = 3
+
+
+def _indexed_spheres(joint_angles, samples_per_segment: int = 4):
+    """Swept spheres tagged with their segment index: (center, radius, seg)."""
     fk = link_positions(joint_angles)
-    spheres: list[tuple[np.ndarray, float]] = []
-    for a, b in zip(_CHAIN[:-1], _CHAIN[1:]):
+    out: list[tuple[np.ndarray, float, int]] = []
+    for seg, (a, b) in enumerate(zip(_CHAIN[:-1], _CHAIN[1:])):
         pa, pb = fk[a], fk[b]
         radius = max(LINK_RADII[a], LINK_RADII[b])
         for t in np.linspace(0.0, 1.0, samples_per_segment):
-            spheres.append((pa * (1.0 - t) + pb * t, radius))
-    return spheres
+            out.append((pa * (1.0 - t) + pb * t, radius, seg))
+    return out
+
+
+def arm_spheres(joint_angles, samples_per_segment: int = 4):
+    """Spheres swept along the arm's link segments: list of (center, radius)."""
+    return [(c, r) for c, r, _ in _indexed_spheres(joint_angles, samples_per_segment)]
+
+
+def self_collision(joint_angles, min_separation: int = SELF_MIN_SEPARATION,
+                   margin: float = 0.0) -> bool:
+    """True if two non-adjacent arm links overlap (the arm folds onto itself)."""
+    spheres = _indexed_spheres(joint_angles)
+    for i in range(len(spheres)):
+        ci, ri, si = spheres[i]
+        for j in range(i + 1, len(spheres)):
+            cj, rj, sj = spheres[j]
+            if abs(si - sj) < min_separation:
+                continue
+            if float(np.linalg.norm(ci - cj)) < ri + rj + margin:
+                return True
+    return False
 
 
 def config_in_collision(joint_angles, obstacles=None, ground_z: float = GROUND_Z,
-                        margin: float = 0.0) -> bool:
-    """True if the arm at this configuration hits the table or any obstacle."""
+                        margin: float = 0.0, check_self: bool = True) -> bool:
+    """True if the arm at this configuration hits the table, an obstacle, or
+    itself (`check_self`)."""
     obstacles = obstacles or []
     for center, radius in arm_spheres(joint_angles):
         if center[2] - radius < ground_z - 1e-9:      # dipped below the table
@@ -121,4 +178,6 @@ def config_in_collision(joint_angles, obstacles=None, ground_z: float = GROUND_Z
         for obs in obstacles:
             if _sphere_hits_obstacle(center, radius, obs, margin):
                 return True
+    if check_self and self_collision(joint_angles, margin=margin):
+        return True
     return False

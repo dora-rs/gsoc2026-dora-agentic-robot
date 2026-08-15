@@ -14,6 +14,8 @@ from simulation.ur5e_collision import (
     make_box,
     make_cylinder,
     make_sphere,
+    obstacle_from_spec,
+    self_collision,
 )
 from simulation.ur5e_kinematics import link_positions
 
@@ -58,3 +60,49 @@ def test_arm_spheres_follow_the_kinematics():
     fk = link_positions(q)
     # the last sphere sits at the wrist_3 origin
     assert np.allclose(spheres[-1][0], fk["wrist_3_link"])
+
+
+# --- self-collision (Week 12) --------------------------------------------
+
+def test_named_poses_have_no_self_collision():
+    """Adjacency masking must not false-positive on any legitimate pose."""
+    for name, q in NAMED_POSES.items():
+        assert not self_collision(q), f"{name} wrongly flagged as self-collision"
+
+
+def test_a_folded_arm_is_a_self_collision():
+    """A configuration that doubles the wrist back onto the shoulder is caught."""
+    assert self_collision([0.0, -2.9, 2.9, 0.0, 0.0, 0.0])
+    assert self_collision([0.0, -3.0, 3.0, -3.0, 0.0, 0.0])
+
+
+def test_config_in_collision_includes_self_by_default():
+    folded = [0.0, -2.9, 2.9, 0.0, 0.0, 0.0]
+    assert config_in_collision(folded)                       # self-collision counted
+    assert not config_in_collision(folded, check_self=False)  # ...unless disabled
+
+
+# --- obstacle specs (Week 12) --------------------------------------------
+
+def test_obstacle_from_spec_dispatches_on_type():
+    box = obstacle_from_spec({"name": "b", "type": "box", "position": [0.3, 0, 0.3],
+                              "half_extents": [0.05, 0.05, 0.05]})
+    assert box["type"] == "box" and box["half_extents"] == [0.05, 0.05, 0.05]
+    # `dimensions` is accepted as full sizes and halved
+    box2 = obstacle_from_spec({"name": "b", "type": "box", "position": [0, 0, 0],
+                               "dimensions": [0.1, 0.1, 0.1]})
+    assert box2["half_extents"] == [0.05, 0.05, 0.05]
+    sph = obstacle_from_spec({"name": "s", "type": "sphere", "position": [0, 0, 0],
+                              "radius": 0.05})
+    assert sph["radius"] == 0.05
+    cyl = obstacle_from_spec({"name": "c", "type": "cylinder", "position": [0, 0, 0],
+                              "radius": 0.05, "height": 0.5})
+    assert cyl["height"] == 0.5
+
+
+def test_obstacle_from_spec_rejects_bad_input():
+    import pytest
+    with pytest.raises(ValueError):
+        obstacle_from_spec({"name": "x", "type": "blob", "position": [0, 0, 0]})
+    with pytest.raises(ValueError):
+        obstacle_from_spec({"name": "x", "type": "box", "position": [0, 0]})

@@ -22,6 +22,10 @@ Later phases extend this package (all interfaces here are forward-compatible):
     (`simulation.ur5e_collision`), so paths route around the table/obstacles and
     an unreachable grasp triggers task-level recovery. Captured live over dora +
     real MuJoCo with a live GPT-4o.
+  - Week 12 — a runtime scene the agent can shape: the planner consumes
+    scene_command at runtime and the `dora_obstacle` tool lets the model register
+    obstacles it's told about, which the planner then routes around; self-collision
+    with adjacency masking (see `agent.motion_tools.DoraObstacleTool`).
 
 The `SKILL.md` loader and `SkillRegistry` are exported here (pure Python). The
 dora bridge and its tools live in the `agent.bridge` / `agent.motion_tools` /

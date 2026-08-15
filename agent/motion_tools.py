@@ -316,6 +316,87 @@ class DoraListTool(Tool):
         return ToolResult(output=json.dumps(result, default=str))
 
 
+OBSTACLE_ACTIONS = ("add", "remove", "clear")
+OBSTACLE_SHAPES = ("box", "sphere", "cylinder")
+DEFAULT_SCENE_TIMEOUT = 5.0
+
+
+class DoraObstacleTool(Tool):
+    """Tell the planner about a workspace obstacle to avoid (or clear one).
+
+    The planner does real collision checking, so an obstacle registered here is
+    routed around by every subsequent `dora_move`. This is how the agent acts on
+    an instruction like "there is a box at (x, y, z), don't hit it".
+    """
+
+    def __init__(self, bridge: DoraAgentBridge):
+        self._bridge = bridge
+
+    def name(self) -> str:
+        return "dora_obstacle"
+
+    def description(self) -> str:
+        return (
+            "Register or remove a workspace obstacle the arm must avoid. The "
+            "planner routes every following motion around known obstacles. Use "
+            "action='add' with a shape and world position to add one (before "
+            "planning a move near it), 'remove' with a name, or 'clear' to remove "
+            "all. Positions are in the world frame, in metres — the same frame "
+            "dora_perceive reports scene objects in."
+        )
+
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": list(OBSTACLE_ACTIONS)},
+                "name": {"type": "string", "description": "Obstacle name (add/remove)."},
+                "shape": {"type": "string", "enum": list(OBSTACLE_SHAPES)},
+                "position": {"type": "array", "items": {"type": "number"},
+                             "description": "World [x, y, z] in metres (add)."},
+                "half_extents": {"type": "array", "items": {"type": "number"},
+                                 "description": "Box half-sizes [hx, hy, hz]."},
+                "radius": {"type": "number", "description": "Sphere/cylinder radius."},
+                "height": {"type": "number", "description": "Cylinder height."},
+                "timeout_secs": {"type": "number"},
+            },
+            "required": ["action"],
+        }
+
+    def tags(self) -> list[str]:
+        return ["scene", "write"]
+
+    def execute(self, args: dict) -> ToolResult:
+        action = str(args.get("action", "")).lower().strip()
+        if action not in OBSTACLE_ACTIONS:
+            return _err(f"action must be one of {list(OBSTACLE_ACTIONS)}")
+
+        command: dict = {"action": action}
+        if action == "add":
+            shape = str(args.get("shape", "")).lower().strip()
+            if shape not in OBSTACLE_SHAPES:
+                return _err(f"shape must be one of {list(OBSTACLE_SHAPES)}")
+            obj = {"name": args.get("name", "obstacle"), "type": shape,
+                   "position": args.get("position")}
+            for key in ("half_extents", "radius", "height"):
+                if key in args:
+                    obj[key] = args[key]
+            command["object"] = obj
+        elif action == "remove":
+            command["name"] = args.get("name")
+
+        timeout = float(args.get("timeout_secs", DEFAULT_SCENE_TIMEOUT))
+        self._bridge.send_json("scene_command", command)
+        result = self._bridge.wait_for_input("scene_result", timeout)
+        if result is None:
+            # A planner without a scene_result wire still applied the command; a
+            # missing ack is not a failure, just unconfirmed.
+            return ToolResult(output=json.dumps({"action": action, "scene_result": None},
+                                                default=str))
+        return ToolResult(output=json.dumps({"action": action, "scene_result": result},
+                                            default=str))
+
+
 class SkillTool(Tool):
     """List dormant skills and pull one into the conversation on demand."""
 
@@ -403,8 +484,9 @@ def build_full_registry(
     registry.register(DoraGripperTool(bridge))
     registry.register(DoraPerceiveTool(bridge))
     registry.register(DoraListTool(bridge))
+    registry.register(DoraObstacleTool(bridge))
 
-    base = ["dora_move", "dora_gripper", "dora_perceive", "dora_list"]
+    base = ["dora_move", "dora_gripper", "dora_perceive", "dora_list", "dora_obstacle"]
     if skills is not None:
         registry.register(SkillTool(skills))
         base.append("skill")

@@ -316,14 +316,16 @@ def test_full_registry_registers_transport_and_semantic_tools():
     registry = build_full_registry(_bridge(), SkillRegistry())
     assert set(registry.names()) == {
         "dora_read", "dora_send", "dora_call",
-        "dora_move", "dora_gripper", "dora_perceive", "dora_list", "skill",
+        "dora_move", "dora_gripper", "dora_perceive", "dora_list", "dora_obstacle",
+        "skill",
     }
 
 
 def test_semantic_tools_are_pinned_as_base_tools():
     registry = build_full_registry(_bridge(), SkillRegistry())
     assert registry.base_tools() == [
-        "dora_gripper", "dora_list", "dora_move", "dora_perceive", "skill",
+        "dora_gripper", "dora_list", "dora_move", "dora_obstacle", "dora_perceive",
+        "skill",
     ]
 
 

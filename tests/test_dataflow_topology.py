@@ -303,6 +303,16 @@ def test_both_planner_dataflows_enable_collision_checking():
         assert planner["env"].get("COLLISION") == "1", path.name
 
 
+def test_both_planner_dataflows_wire_the_runtime_scene():
+    """The agent's scene_command reaches the planner, and its ack comes back —
+    so an obstacle the agent registers is what the planner then avoids (Week 12)."""
+    for path in (MUJOCO_PLANNER, MUJOCO_PLANNER_LLM):
+        nodes = load_nodes(str(path))
+        assert nodes["rrt_planner"].inputs["scene_command"] == "agent_bridge/scene_command", path.name
+        assert "scene_result" in nodes["rrt_planner"].outputs, path.name
+        assert nodes["agent_bridge"].inputs["scene_result"] == "rrt_planner/scene_result", path.name
+
+
 def test_detects_dangling_edge(tmp_path):
     """The checker must flag a broken wire."""
     bad = tmp_path / "bad.yml"

@@ -15,11 +15,15 @@ True) and its FK is GEN72-shaped, so obstacle avoidance is not yet active; the
 UR5e arm is described to the planner by `simulation.ur5e_moveit_config`.
 
 Inputs:
-  - plan_request : JSON {"start": [6], "goal": [6] | name}
+  - plan_request  : JSON {"start": [6], "goal": [6] | name}
+  - scene_command : JSON {"action":"add","object":{...}} | {"action":"remove",
+                    "name":...} | {"action":"clear"} — runtime workspace obstacles
+                    the collision-aware planner then routes around (Week 12).
 
 Outputs:
   - plan_status  : JSON {"success": bool, "message": str, "num_waypoints": int, ...}
   - trajectory   : float[N*6] flattened waypoints (row-major, N waypoints x 6 joints)
+  - scene_result : JSON {"result": str, "obstacles": int} — ack of a scene_command
 
 Environment:
   - DORA_MOVEIT2_PATH  : path to the dora-moveit2 `dora_moveit` package dir.
@@ -106,7 +110,9 @@ def load_collision_planner(obstacles=None, ground_z=None, margin: float = 0.0,
     planner, PlanRequest, PlannerType = load_planner(num_joints)
     from dora_moveit.motion_planner.planner_ompl_with_collision_op import PlanResult
 
-    obstacles = obstacles or []
+    # Keep the caller's list by reference so obstacles added at runtime (via a
+    # scene_command) are seen live by is_state_valid — do not copy.
+    obstacles = [] if obstacles is None else obstacles
     ground_z = GROUND_Z if ground_z is None else ground_z
     lo, hi = planner.joint_limits_lower, planner.joint_limits_upper
 
@@ -130,6 +136,36 @@ def load_collision_planner(obstacles=None, ground_z=None, margin: float = 0.0,
     planner.is_state_valid = is_state_valid
     planner.plan = plan
     return planner, PlanRequest, PlannerType
+
+
+def apply_scene_command(obstacles: list, command: dict) -> str:
+    """Mutate `obstacles` in place from a scene_command; return a status message.
+
+    Commands: `{"action":"add","object":{...}}`, `{"action":"remove","name":...}`,
+    `{"action":"clear"}`. Adding a name that already exists replaces it, so a
+    repeated add is idempotent. Returns a short human-readable result.
+    """
+    from simulation.ur5e_collision import obstacle_from_spec
+
+    action = str((command or {}).get("action", "")).lower()
+    if action == "clear":
+        n = len(obstacles)
+        obstacles.clear()
+        return f"cleared {n} obstacle(s)"
+    if action == "remove":
+        name = command.get("name")
+        before = len(obstacles)
+        obstacles[:] = [o for o in obstacles if o.get("name") != name]
+        return f"removed {before - len(obstacles)} obstacle(s) named {name!r}"
+    if action == "add":
+        try:
+            obs = obstacle_from_spec(command.get("object", {}))
+        except (ValueError, KeyError, TypeError) as exc:
+            return f"rejected obstacle: {exc}"
+        obstacles[:] = [o for o in obstacles if o.get("name") != obs["name"]]
+        obstacles.append(obs)
+        return f"added {obs['type']} {obs['name']!r} ({len(obstacles)} total)"
+    return f"unknown scene action {action!r}"
 
 
 def resolve_config(value, num_joints: int = NUM_JOINTS) -> list[float] | None:
@@ -201,11 +237,12 @@ def main() -> None:
     planner_type = os.environ.get("PLANNER_TYPE", "rrt_connect")
     collision = _bool_env("COLLISION", True)
 
+    # Obstacles are mutated in place by scene_command at runtime; the collision
+    # planner reads this same list live, so a plan issued after an obstacle is
+    # added routes around it.
+    obstacles: list = []
     if collision:
-        # Real collision checking against the table (workspace obstacles can be
-        # added via the scene later); the planner routes around them and fails
-        # cleanly on a goal that is in collision.
-        planner, PlanRequest, PlannerType = load_collision_planner()
+        planner, PlanRequest, PlannerType = load_collision_planner(obstacles=obstacles)
     else:
         planner, PlanRequest, PlannerType = load_planner()
     print(f"[rrt_planner] ready — {planner_type}, {planner.num_joints} joints, "
@@ -214,7 +251,23 @@ def main() -> None:
     for event in node:
         if event["type"] == "STOP":
             break
-        if event["type"] != "INPUT" or event["id"] != "plan_request":
+        if event["type"] != "INPUT":
+            continue
+
+        # Runtime scene updates: add/remove/clear workspace obstacles.
+        if event["id"] == "scene_command":
+            try:
+                command = json.loads(bytes(event["value"].to_pylist()).decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError, AttributeError) as exc:
+                print(f"[rrt_planner] bad scene_command: {exc}")
+                continue
+            result = apply_scene_command(obstacles, command)
+            node.send_output("scene_result", _json({"result": result,
+                                                    "obstacles": len(obstacles)}))
+            print(f"[rrt_planner] scene: {result}")
+            continue
+
+        if event["id"] != "plan_request":
             continue
 
         try:

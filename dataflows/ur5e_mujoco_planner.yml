@@ -34,9 +34,11 @@ nodes:
     path: ../simulation/rrt_planner_node.py
     inputs:
       plan_request: agent_bridge/plan_request
+      scene_command: agent_bridge/scene_command
     outputs:
       - plan_status
       - trajectory
+      - scene_result
     env:
       ROBOT_CONFIG_MODULE: simulation.ur5e_moveit_config
       PLANNER_TYPE: rrt_connect
@@ -72,6 +74,7 @@ nodes:
       plan_status: rrt_planner/plan_status
       execution_status: trajectory_executor/execution_status
       gripper_status: gripper_controller/gripper_status
+      scene_result: rrt_planner/scene_result
     outputs:
       - plan_request
       - ik_request
