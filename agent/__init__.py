@@ -17,6 +17,11 @@ Later phases extend this package (all interfaces here are forward-compatible):
   - Week 10 — dora_move runs the real dora-moveit2 RRT-Connect planner: a live
     LLM completes the pick-and-place through genuine multi-waypoint path search
     (see `agent.live_planner_demo`, `simulation.rrt_planner_node`)
+  - Week 11 — the planner is collision-aware: MuJoCo-exact UR5e FK
+    (`simulation.ur5e_kinematics`) drives real collision checking
+    (`simulation.ur5e_collision`), so paths route around the table/obstacles and
+    an unreachable grasp triggers task-level recovery. Captured live over dora +
+    real MuJoCo with a live GPT-4o.
 
 The `SKILL.md` loader and `SkillRegistry` are exported here (pure Python). The
 dora bridge and its tools live in the `agent.bridge` / `agent.motion_tools` /

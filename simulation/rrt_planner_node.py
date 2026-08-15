@@ -85,6 +85,53 @@ def load_planner(num_joints: int = NUM_JOINTS):
     return OMPLPlanner(num_joints=num_joints), PlanRequest, PlannerType
 
 
+def load_collision_planner(obstacles=None, ground_z=None, margin: float = 0.0,
+                           num_joints: int = NUM_JOINTS):
+    """Like `load_planner`, but the returned planner does real collision checking.
+
+    dora-moveit2's own `is_state_valid` is stubbed (returns True). Here the arm is
+    placed in the world with the MuJoCo-exact UR5e FK and tested against the table
+    and `obstacles` (see `simulation.ur5e_collision`), so RRT-Connect searches for
+    a genuinely collision-free path and a goal that is in collision fails to plan —
+    the real signal `dora_move`'s task-level recovery reacts to.
+
+    Returns `(planner, PlanRequest, PlannerType)` with the same shape as
+    `load_planner`; the collision check is patched onto the instance so the base
+    RRT algorithms use it via `is_motion_valid`.
+    """
+    import numpy as np
+
+    from simulation.ur5e_collision import GROUND_Z, config_in_collision
+
+    planner, PlanRequest, PlannerType = load_planner(num_joints)
+    from dora_moveit.motion_planner.planner_ompl_with_collision_op import PlanResult
+
+    obstacles = obstacles or []
+    ground_z = GROUND_Z if ground_z is None else ground_z
+    lo, hi = planner.joint_limits_lower, planner.joint_limits_upper
+
+    def is_state_valid(config) -> bool:
+        c = np.asarray(config, dtype=float)
+        if not (np.all(c >= lo) and np.all(c <= hi)):
+            return False
+        return not config_in_collision(c, obstacles, ground_z, margin)
+
+    base_plan = planner.plan
+
+    def plan(request):
+        # Reject an unreachable start/goal up front so the failure is a clear
+        # "in collision", not an exhausted search.
+        if not is_state_valid(request.goal_config):
+            return PlanResult(success=False, message="goal configuration is in collision")
+        if not is_state_valid(request.start_config):
+            return PlanResult(success=False, message="start configuration is in collision")
+        return base_plan(request)
+
+    planner.is_state_valid = is_state_valid
+    planner.plan = plan
+    return planner, PlanRequest, PlannerType
+
+
 def resolve_config(value, num_joints: int = NUM_JOINTS) -> list[float] | None:
     """Resolve a start/goal (named pose or joint vector) to a numeric config."""
     if isinstance(value, str):
@@ -141,14 +188,28 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    val = os.environ.get(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
+
 def main() -> None:
     node = Node()
     max_time = _float_env("PLANNER_MAX_TIME", 5.0)
     planner_type = os.environ.get("PLANNER_TYPE", "rrt_connect")
+    collision = _bool_env("COLLISION", True)
 
-    planner, PlanRequest, PlannerType = load_planner()
+    if collision:
+        # Real collision checking against the table (workspace obstacles can be
+        # added via the scene later); the planner routes around them and fails
+        # cleanly on a goal that is in collision.
+        planner, PlanRequest, PlannerType = load_collision_planner()
+    else:
+        planner, PlanRequest, PlannerType = load_planner()
     print(f"[rrt_planner] ready — {planner_type}, {planner.num_joints} joints, "
-          f"budget {max_time}s")
+          f"budget {max_time}s, collision={'on' if collision else 'off'}")
 
     for event in node:
         if event["type"] == "STOP":

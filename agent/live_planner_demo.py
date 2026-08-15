@@ -6,9 +6,11 @@ no path search. This demo puts the genuine dora-moveit2 RRT-Connect planner in
 the loop. `PlannerBackedNode` subclasses the Week 7 stateful `PickPlaceNode` and
 overrides one thing — a `plan_request` is now run through the real `OMPLPlanner`
 (configured for the UR5e), producing an actual multi-waypoint path, before the
-arm arrives at the goal. Everything else — the ball tracking, the gripper, the
-outcome check — is unchanged, so success is still judged by **outcome**: the ball
-must end on the green plate, and every motion must have been a real plan.
+arm arrives at the goal. Since Week 11 that planner is **collision-aware**: every
+plan is checked against the table via the MuJoCo-exact UR5e FK. Everything else —
+the ball tracking, the gripper, the outcome check — is unchanged, so success is
+still judged by **outcome**: the ball must end on the green plate, and every
+motion must have been a real plan.
 
 Two entry points, mirroring the split the rest of the repo uses:
 
@@ -29,7 +31,7 @@ from __future__ import annotations
 import os
 import sys
 
-from simulation.rrt_planner_node import load_planner, plan_path
+from simulation.rrt_planner_node import load_collision_planner, plan_path
 from .agent import Agent, AgentConfig
 from .bridge import DoraAgentBridge, compose_system_prompt
 from .bridge_node import BASE_SYSTEM_PROMPT
@@ -54,8 +56,11 @@ class PlannerBackedNode(PickPlaceNode):
     assert the motions were genuinely planned (>= 2 waypoints), not teleported.
     """
 
-    def __init__(self, start_pose: str = "home"):
-        self._planner, self._PlanRequest, self._PlannerType = load_planner()
+    def __init__(self, start_pose: str = "home", obstacles=None):
+        # Collision-aware: every plan is checked against the table (and any
+        # obstacles) via the MuJoCo-exact UR5e FK — the Week 11 upgrade.
+        self._planner, self._PlanRequest, self._PlannerType = \
+            load_collision_planner(obstacles=obstacles)
         self.plans: list[int] = []
         super().__init__(start_pose)
 

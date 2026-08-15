@@ -15,6 +15,7 @@ RECOVERY = DATAFLOWS / "ur5e_agent_recovery.yml"
 MUJOCO_AGENT = DATAFLOWS / "ur5e_mujoco_agent.yml"
 MUJOCO_AGENT_LLM = DATAFLOWS / "ur5e_mujoco_agent_llm.yml"
 MUJOCO_PLANNER_LLM = DATAFLOWS / "ur5e_mujoco_planner_llm.yml"
+MUJOCO_PLANNER = DATAFLOWS / "ur5e_mujoco_planner.yml"
 
 LOOPBACK_NODES = {"pipeline_stub", "gripper_controller", "agent_bridge", "mission_source"}
 MUJOCO_AGENT_NODES = {"mujoco_sim", "sim_executor", "gripper_controller",
@@ -276,6 +277,30 @@ def test_planner_dataflow_is_repo_local_with_a_real_provider():
     assert bridge["env"]["OCTOS_PROVIDER"] == "openai"
     assert not any("API_KEY" in k for k in bridge.get("env", {})), \
         "do not hardcode an API key in the dataflow"
+
+
+def test_mujoco_planner_mock_has_no_dangling_edges():
+    result = check(str(MUJOCO_PLANNER))
+    assert result.ok, "dangling wires:\n" + "\n".join(result.errors)
+
+
+def test_mujoco_planner_mock_is_the_planner_flow_with_collision_on():
+    """The CI-runnable planner dataflow: same pipeline as the live-LLM one, mock
+    provider, collision checking explicitly enabled on the planner node."""
+    assert set(load_nodes(str(MUJOCO_PLANNER))) == MUJOCO_PLANNER_NODES
+    spec = yaml.safe_load(MUJOCO_PLANNER.read_text())
+    bridge = next(n for n in spec["nodes"] if n["id"] == "agent_bridge")
+    assert bridge["env"]["OCTOS_PROVIDER"] == "mock"
+    planner = next(n for n in spec["nodes"] if n["id"] == "rrt_planner")
+    assert planner["env"]["COLLISION"] == "1"
+
+
+def test_both_planner_dataflows_enable_collision_checking():
+    """Collision checking is on for both the mock and the live-LLM planner flows."""
+    for path in (MUJOCO_PLANNER, MUJOCO_PLANNER_LLM):
+        spec = yaml.safe_load(path.read_text())
+        planner = next(n for n in spec["nodes"] if n["id"] == "rrt_planner")
+        assert planner["env"].get("COLLISION") == "1", path.name
 
 
 def test_detects_dangling_edge(tmp_path):

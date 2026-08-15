@@ -1,29 +1,16 @@
-# Week 10 — A live LLM driving the pick-and-place through the REAL dora-moveit2
-# planner on the real MuJoCo sim.
+# Week 11 — the mock agent driving the COLLISION-CHECKED real planner on the real
+# MuJoCo sim. This is the CI-runnable counterpart of ur5e_mujoco_planner_llm.yml:
+# same pipeline (rrt_planner -> trajectory_executor -> real sim), but the scripted
+# mock provider drives it so it runs deterministically without an API key.
 #
-# Week 9 got a live GPT-4o completing the task, but through `sim_executor` —
-# direct joint control that snaps straight to each goal, no path search. This
-# dataflow replaces that single node with the genuine motion stack:
+#   mujoco_sim -> agent_bridge -> rrt_planner (collision on) -> trajectory
+#              -> trajectory_executor -> real sim
 #
-#   agent_bridge -> rrt_planner (real dora-moveit2 RRT-Connect) -> trajectory
-#                -> trajectory_executor (follow the path on real physics) -> sim
+# The planner now checks every configuration against the table via the
+# MuJoCo-exact UR5e FK (COLLISION=1), so the path it returns is collision-free.
 #
-# So the live model's dora_move now triggers real sampling-based planning, and a
-# real multi-waypoint path is executed through MuJoCo dynamics. Task-level
-# recovery (re-perceive, re-approach) now fires against *real* planner outcomes
-# rather than injected failures.
-#
-# The planner is imported from the sibling dora-moveit2 checkout (path-search
-# half only — no OMPL/TracIK/toppra C++ deps). Non-deterministic + needs an API
-# key, so this is the live demo, not CI. The key is read from the environment and
-# never committed here:
-#
-#   export OPENAI_API_KEY=sk-...
-#   bash scripts/fetch_ur5e_assets.sh                        # one-time meshes
-#   dora run dataflows/ur5e_mujoco_planner_llm.yml --stop-after 150s
-#
-# OCTOS_MODEL overrides the model (default gpt-4o). DORA_MOVEIT2_PATH overrides
-# where the dora_moveit package is found (defaults to the sibling checkout).
+#   bash scripts/fetch_ur5e_assets.sh                      # one-time meshes
+#   MUJOCO_HEADLESS=1 dora run dataflows/ur5e_mujoco_planner.yml --stop-after 60s
 
 nodes:
   # --- Real UR5e + Robotiq MuJoCo simulation (this repo, Week 1). ---
@@ -41,7 +28,7 @@ nodes:
       MUJOCO_HEADLESS: "1"
       SIM_SUBSTEPS: "24"
 
-  # --- RRT-Connect planner: the real dora-moveit2 path search (this repo node,
+  # --- RRT-Connect planner with real collision checking (this repo node,
   #     dora-moveit2 algorithm). plan_request -> plan_status + trajectory. ---
   - id: rrt_planner
     path: ../simulation/rrt_planner_node.py
@@ -56,8 +43,7 @@ nodes:
       PLANNER_MAX_TIME: "5.0"
       COLLISION: "1"
 
-  # --- Trajectory executor: follow the planned path on the real sim, waypoint
-  #     by waypoint, then report execution_status (this repo, Week 10). ---
+  # --- Trajectory executor: follow the planned path on the real sim. ---
   - id: trajectory_executor
     path: ../simulation/trajectory_executor_node.py
     inputs:
@@ -68,7 +54,7 @@ nodes:
       - control_input
       - execution_status
 
-  # --- Robotiq 2F-85 gripper controller (this repo, Week 2 — the real node). ---
+  # --- Robotiq 2F-85 gripper controller (this repo, Week 2). ---
   - id: gripper_controller
     path: ../simulation/gripper_controller.py
     inputs:
@@ -77,8 +63,7 @@ nodes:
       - gripper_ctrl
       - gripper_status
 
-  # --- Agent bridge, running a REAL LLM (OCTOS_PROVIDER=openai). Reads the
-  #     planner's plan_status and the executor's execution_status. ---
+  # --- Agent bridge, scripted mock provider (no API key). ---
   - id: agent_bridge
     path: ../agent/bridge_node.py
     inputs:
@@ -95,7 +80,7 @@ nodes:
       - gripper_command
       - agent_response
     env:
-      OCTOS_PROVIDER: openai
+      OCTOS_PROVIDER: mock
       OCTOS_SKILLS_DIR: ../skills
 
   # --- Mission source: one natural-language mission, then logs the reply. ---

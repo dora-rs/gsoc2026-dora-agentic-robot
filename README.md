@@ -14,6 +14,7 @@ GSOC 2026 | Agentic DORA — agent-driven framework for intelligent robot contro
 - **Week 8 — Replanning recovery + the agent on the real MuJoCo sim.** `dora_move` now replans a failed plan transparently (randomised planners fail on unlucky samples), with a real dataflow that injects planner failures to prove recovery across processes. And the full pick-and-place now runs on the **real MuJoCo simulator** headless — real actuators, real settling, real gripper contact — via a `sim_executor` node, no dora-moveit2 needed. → **[docs/week8-recovery-and-real-sim.md](docs/week8-recovery-and-real-sim.md)**
 - **Week 9 — A live LLM drives the task.** The scripted provider is out of the loop: real GPT-4o discovers and activates the `pick-and-place` skill, perceives, and issues each motion itself, completing the mission (verified by outcome — ball on plate). Getting there meant advertising dormant skills in the prompt, self-healing sensor reads, and task-level recovery — the failure modes only a real model exposes — plus a `ReactiveMockProvider` to test recovery deterministically. → **[docs/week9-live-llm.md](docs/week9-live-llm.md)**
 - **Week 10 — The real planner in the loop.** The last mock in the motion stack is gone: `dora_move` now runs the genuine dora-moveit2 RRT-Connect planner (pure-NumPy path search — no OMPL/TracIK/toppra C++ needed), producing a real multi-waypoint path that a new trajectory-executor node follows through the real sim. A live GPT-4o completes the whole pick-and-place through real planning (verified by outcome, and by every motion being a real plan), with a UR5e `RobotConfig` for the planner and a repo-local planner node that keeps the dataflow self-contained. → **[docs/week10-real-planner.md](docs/week10-real-planner.md)**
+- **Week 11 — Collision checking, and the pipeline runs live.** The planner is now collision-aware: analytic UR5e forward kinematics (validated against MuJoCo to 7e-16 m) place the arm in the world so a configuration can be tested against the table and obstacles — paths route around a box that blocks the straight line, and a blocked grasp fails to plan and triggers task-level recovery. With the shared machine's coordinator port finally free, the whole pipeline ran **live over dora** for the first time — including a live GPT-4o completing the pick-and-place through the collision-checked planner on the real MuJoCo sim. → **[docs/week11-collision-checking.md](docs/week11-collision-checking.md)**
 
 ```bash
 pip install -e .
@@ -41,6 +42,9 @@ OPENAI_API_KEY=sk-... dora run dataflows/ur5e_mujoco_agent_llm.yml --stop-after 
 python -m agent.live_planner_demo --mock                        # Week 10: pick-and-place through the REAL planner (no key)
 OPENAI_API_KEY=sk-... python -m agent.live_planner_demo         # Week 10: a live LLM through the real RRT-Connect planner
 OPENAI_API_KEY=sk-... dora run dataflows/ur5e_mujoco_planner_llm.yml --stop-after 150s  # Week 10: live LLM + real planner + real sim
+
+MUJOCO_HEADLESS=1 dora run dataflows/ur5e_mujoco_planner.yml --stop-after 70s  # Week 11: COLLISION-checked planner on real sim (no key)
+OPENAI_API_KEY=sk-... MUJOCO_HEADLESS=1 dora run dataflows/ur5e_mujoco_planner_llm.yml --stop-after 150s  # Week 11: live GPT-4o + collision-checked planner + real sim
 ```
 
 Validate dataflow wiring without a simulator:
@@ -53,7 +57,7 @@ Tests (no MuJoCo/dora/display required):
 
 ```bash
 pip install -e ".[dev]"
-PYTHONPATH=. pytest tests/ -q -m "not integration"  # 179 unit tests (~3s)
+PYTHONPATH=. pytest tests/ -q -m "not integration"  # 193 unit tests (~4s)
 PYTHONPATH=. pytest tests/ -q                       # + real dora dataflow runs (~85s)
 RUN_LIVE_LLM=1 OPENAI_API_KEY=sk-... pytest tests/test_live_llm.py -q  # opt-in: a real GPT-4o run
 ```
@@ -62,7 +66,7 @@ RUN_LIVE_LLM=1 OPENAI_API_KEY=sk-... pytest tests/test_live_llm.py -q  # opt-in:
 
 ```
 agent/           Agent loop, ToolRegistry, LLM providers + failover, dora bridge, robot tools (with replanning), skills
-simulation/      UR5e MuJoCo node, gripper + mission sources, pipeline stub, sim executor, RRT-Connect planner + trajectory executor, UR5e planner config, named poses, scene model
+simulation/      UR5e MuJoCo node, gripper + mission sources, pipeline stub, sim executor, RRT-Connect planner + trajectory executor, UR5e planner config, forward kinematics + collision checking, named poses, scene model
 skills/          SKILL.md domain knowledge injected into the agent's system prompt
 dataflows/       dora dataflow configs
 scripts/         asset fetch helper
