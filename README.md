@@ -2,6 +2,19 @@
 
 GSOC 2026 | Agentic DORA — agent-driven framework for intelligent robot control, autonomous decision-making, and robotic task orchestration.
 
+![Pick-and-place in MuJoCo](docs/assets/pick_and_place.gif)
+
+## Documentation
+
+Start here: **[docs/final-submission.md](docs/final-submission.md)** (deliverables
+checklist + 3-command tour) and the **[docs index](docs/README.md)**. Core guides —
+[Architecture](docs/architecture.md) ·
+[Setup (5 min)](docs/setup.md) ·
+[Tool API reference](docs/tool-reference.md) ·
+[Skill authoring](docs/skill-authoring.md) ·
+[Pipeline authoring](docs/pipeline-authoring.md) ·
+[Extending (tools/providers/robots)](docs/extending.md).
+
 ## Status
 
 - **Week 1 — UR5e MuJoCo simulation environment.** Reproducible MuJoCo scene (UR5e + Robotiq 2F-85, red ball, green plate target) as a dora node. → **[docs/week1-simulation.md](docs/week1-simulation.md)**
@@ -16,6 +29,7 @@ GSOC 2026 | Agentic DORA — agent-driven framework for intelligent robot contro
 - **Week 10 — The real planner in the loop.** The last mock in the motion stack is gone: `dora_move` now runs the genuine dora-moveit2 RRT-Connect planner (pure-NumPy path search — no OMPL/TracIK/toppra C++ needed), producing a real multi-waypoint path that a new trajectory-executor node follows through the real sim. A live GPT-4o completes the whole pick-and-place through real planning (verified by outcome, and by every motion being a real plan), with a UR5e `RobotConfig` for the planner and a repo-local planner node that keeps the dataflow self-contained. → **[docs/week10-real-planner.md](docs/week10-real-planner.md)**
 - **Week 11 — Collision checking, and the pipeline runs live.** The planner is now collision-aware: analytic UR5e forward kinematics (validated against MuJoCo to 7e-16 m) place the arm in the world so a configuration can be tested against the table and obstacles — paths route around a box that blocks the straight line, and a blocked grasp fails to plan and triggers task-level recovery. With the shared machine's coordinator port finally free, the whole pipeline ran **live over dora** for the first time — including a live GPT-4o completing the pick-and-place through the collision-checked planner on the real MuJoCo sim. → **[docs/week11-collision-checking.md](docs/week11-collision-checking.md)**
 - **Week 12 — A runtime scene the agent can shape.** Obstacles are no longer a fixed table baked into the planner: the planner consumes a `scene_command` at runtime (add / remove / clear), and a new `dora_obstacle` tool lets the agent register an obstacle it's told about — the planner then routes every subsequent motion around it. Plus self-collision with adjacency masking (no false positives). Captured live over dora: a GPT-4o told to avoid a box registers it and the plans past it detour (23/34 waypoints vs the direct 12). → **[docs/week12-dynamic-scene.md](docs/week12-dynamic-scene.md)**
+- **Week 13 — Documentation & demo polish.** A full documentation set — [architecture](docs/architecture.md) with a dataflow topology diagram, a under-5-minute [setup guide](docs/setup.md), a [tool API reference](docs/tool-reference.md) (schemas, examples, errors), and authoring guides for [skills](docs/skill-authoring.md), [pipelines](docs/pipeline-authoring.md), and [extensions](docs/extending.md) — plus a rendered pick-and-place demo GIF (`scripts/render_demo.py`). → **[docs/README.md](docs/README.md)**
 
 ```bash
 pip install -e .
@@ -71,8 +85,8 @@ RUN_LIVE_LLM=1 OPENAI_API_KEY=sk-... pytest tests/test_live_llm.py -q  # opt-in:
 agent/           Agent loop, ToolRegistry, LLM providers + failover, dora bridge, robot tools (with replanning), skills
 simulation/      UR5e MuJoCo node, gripper + mission sources, pipeline stub, sim executor, RRT-Connect planner (runtime scene) + trajectory executor, UR5e planner config, forward kinematics + collision/self-collision, named poses, scene model
 skills/          SKILL.md domain knowledge injected into the agent's system prompt
-dataflows/       dora dataflow configs
-scripts/         asset fetch helper
-tests/           unit tests
-docs/            per-week deliverable notes
+dataflows/       dora dataflow configs (10)
+scripts/         asset fetch helper + demo GIF render (render_demo.py)
+tests/           ~200 unit tests + real-dataflow integration tests
+docs/            guides (architecture, setup, tool/skill/pipeline/extension) + per-week build log
 ```
