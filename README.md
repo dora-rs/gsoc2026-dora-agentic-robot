@@ -2,12 +2,21 @@
 
 GSOC 2026 | Agentic DORA — agent-driven framework for intelligent robot control, autonomous decision-making, and robotic task orchestration.
 
-![Pick-and-place in MuJoCo](docs/assets/pick_and_place.gif)
+![Pick-and-place in MuJoCo: the UR5e grasps the red ball and places it on the green plate](docs/assets/pick_and_place.gif)
+
+*The pick-and-place under real physics, rendered from MuJoCo (`python scripts/render_demo.py`).*
+
+## Project links
+
+- 📄 **[Final report](FINAL_REPORT.md)** — what was built, design decisions, results, and future work.
+- 📋 **[Project board](https://github.com/orgs/dora-rs/projects/8)** — gsoc2026-dora-agentic-robot.
+- 🔀 **Key PRs** (all merged): [Agent core #27](https://github.com/dora-rs/gsoc2026-dora-agentic-robot/pull/27) · [LLM providers #29](https://github.com/dora-rs/gsoc2026-dora-agentic-robot/pull/29) · [Agent bridge + skills #31](https://github.com/dora-rs/gsoc2026-dora-agentic-robot/pull/31) · [Motion tools #33](https://github.com/dora-rs/gsoc2026-dora-agentic-robot/pull/33) · [Live LLM #37](https://github.com/dora-rs/gsoc2026-dora-agentic-robot/pull/37) · [Real planner #39](https://github.com/dora-rs/gsoc2026-dora-agentic-robot/pull/39) · [Collision checking #41](https://github.com/dora-rs/gsoc2026-dora-agentic-robot/pull/41) · [Runtime scene #43](https://github.com/dora-rs/gsoc2026-dora-agentic-robot/pull/43) · [Documentation #45](https://github.com/dora-rs/gsoc2026-dora-agentic-robot/pull/45)
 
 ## Documentation
 
-Start here: **[docs/final-submission.md](docs/final-submission.md)** (deliverables
-checklist + 3-command tour) and the **[docs index](docs/README.md)**. Core guides —
+Start here: **[FINAL_REPORT.md](FINAL_REPORT.md)** and
+**[docs/final-submission.md](docs/final-submission.md)** (deliverables checklist +
+3-command tour), then the **[docs index](docs/README.md)**. Core guides —
 [Architecture](docs/architecture.md) ·
 [Setup (5 min)](docs/setup.md) ·
 [Tool API reference](docs/tool-reference.md) ·
